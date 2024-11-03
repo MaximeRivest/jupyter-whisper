@@ -1,16 +1,7 @@
 Examples
 ========
 
-Basic Usage
-----------
+.. toctree::
+   :maxdepth: 2
 
-.. literalinclude:: ../../../examples/basic_usage.py
-   :language: python
-   :linenos:
-
-Advanced Features
----------------
-
-.. literalinclude:: ../../../examples/advanced_features.py
-   :language: python
-   :linenos:
+   notebooks/basic.ipynb
