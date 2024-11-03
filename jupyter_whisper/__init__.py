@@ -67,7 +67,7 @@ If you want to help the user write about code the teaches them how to write code
 model = "claude-3-5-sonnet-20241022"
 
 # Add debug flag at the top with other imports
-DEBUG = False  # Set this to True to enable debug output
+DEBUG = True  # Set this to True to enable debug output
 
 # Add OpenAI client initialization
 config_manager = get_config_manager()
@@ -558,7 +558,8 @@ function hello() {
 """,
         "messages": [
             {"role": "user", "content": request.selectedText}
-        ]
+        ],
+        "max_tokens": 8192
     }
 
     try:
