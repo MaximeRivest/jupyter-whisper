@@ -1,12 +1,26 @@
 API Reference
 ============
 
-.. toctree::
-   :maxdepth: 2
+Core Components
+-------------
 
-   core
-   chat
-   search
-   cell_management
-   server
+.. automodule:: jupyterchat.core
+   :members:
+   :undoc-members:
+   :show-inheritance:
 
+Chat Interface
+-------------
+
+.. automodule:: jupyterchat.chat
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Utilities
+--------
+
+.. automodule:: jupyterchat.utils
+   :members:
+   :undoc-members:
+   :show-inheritance:

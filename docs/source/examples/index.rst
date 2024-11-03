@@ -1,11 +1,16 @@
 Examples
 ========
 
-.. toctree::
-   :maxdepth: 2
+Basic Usage
+----------
 
-   basic_chat
-   code_execution
-   search_examples
-   audio_transcription
+.. literalinclude:: ../../../examples/basic_usage.py
+   :language: python
+   :linenos:
 
+Advanced Features
+---------------
+
+.. literalinclude:: ../../../examples/advanced_features.py
+   :language: python
+   :linenos:
