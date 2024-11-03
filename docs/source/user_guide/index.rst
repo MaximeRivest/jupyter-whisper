@@ -6,14 +6,14 @@ Installation
 
 .. code-block:: bash
 
-   pip install jupyterchat
+   pip install jupyter_whisper
 
 Quick Start
 ----------
 
 .. code-block:: python
 
-   from jupyterchat import *
+   from jupyter_whisper import *
 
    # Start a chat session
    %%user 0

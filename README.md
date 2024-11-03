@@ -1,6 +1,6 @@
-# JupyterChat - AI-Powered Chat Interface for Jupyter Notebooks
+# JupyterWhisper - AI-Powered Chat Interface for Jupyter Notebooks
 
-JupyterChat transforms your Jupyter notebook environment by seamlessly integrating Claude AI capabilities. This extension enables natural chat interactions, intelligent code execution, and voice command features to enhance your notebook workflow.
+JupyterWhisper transforms your Jupyter notebook environment by seamlessly integrating Claude AI capabilities. This extension enables natural chat interactions, intelligent code execution, and voice command features to enhance your notebook workflow.
 
 ## ✨ Key Features
 
@@ -15,7 +15,7 @@ JupyterChat transforms your Jupyter notebook environment by seamlessly integrati
 ## 🚀 Installation
 
 ```bash
-pip install jupyterchat
+pip install jupyter_whisper
 ```
 ## 📋 Requirements
 
@@ -63,10 +63,10 @@ os.environ["PERPLEXITY_API_KEY"] = "your-key-here"  # For search
 ```
 </details>
 
-2. Import and start using JupyterChat:
+2. Import and start using JupyterWhisper:
 
 ```python
-import jupyterchat as jc
+import jupyter_whisper as jc
 ```
 
 ## 💡 Usage
@@ -125,8 +125,8 @@ hist()  # Display formatted chat history
 ### Setup Development Environment
 
 ```bash
-git clone https://github.com/yourusername/jupyterchat.git
-cd jupyterchat
+git clone https://github.com/yourusername/jupyter_whisper.git
+cd jupyter_whisper
 pip install -e ".[dev]"
 ```
 

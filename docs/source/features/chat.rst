@@ -3,7 +3,7 @@ Chat Features
 
 Magic Commands
 ------------
-JupyterChat uses cell magic commands for chat interaction:
+JupyterWhisper uses cell magic commands for chat interaction:
 
 - %%user: Create user messages
 - %%assistant: Create assistant responses

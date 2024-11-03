@@ -1,7 +1,7 @@
-JupyterChat Documentation
+JupyterWhisper Documentation
 ========================
 
-JupyterChat is a Jupyter notebook extension that enhances notebooks with chat-like capabilities, AI assistance, and advanced cell management features.
+JupyterWhisper is a Jupyter notebook extension that enhances notebooks with chat-like capabilities, AI assistance, and advanced cell management features.
 
 .. toctree::
    :maxdepth: 2
@@ -27,7 +27,7 @@ Quick Start
 
 .. code-block:: python
 
-   from jupyterchat import *
+   from jupyter_whisper import *
 
    # Start a chat session
    %%user 0
@@ -38,5 +38,5 @@ Installation
 
 .. code-block:: bash
 
-   pip install jupyterchat
+   pip install jupyter_whisper
 

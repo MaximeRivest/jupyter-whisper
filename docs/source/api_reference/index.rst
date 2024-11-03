@@ -4,7 +4,7 @@ API Reference
 Core Components
 -------------
 
-.. automodule:: jupyterchat.core
+.. automodule:: jupyter_whisper.core
    :members:
    :undoc-members:
    :show-inheritance:
@@ -12,7 +12,7 @@ Core Components
 Chat Interface
 -------------
 
-.. automodule:: jupyterchat.chat
+.. automodule:: jupyter_whisper.chat
    :members:
    :undoc-members:
    :show-inheritance:
@@ -20,7 +20,7 @@ Chat Interface
 Utilities
 --------
 
-.. automodule:: jupyterchat.utils
+.. automodule:: jupyter_whisper.utils
    :members:
    :undoc-members:
    :show-inheritance:

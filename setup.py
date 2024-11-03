@@ -7,7 +7,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
     requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
 
 setup(
-    name="jupyterchat",
+    name="jupyter_whisper",
     version="0.1.0-beta.1",
     author="Maxime Rivest",
     author_email="mrive052@gmail.com",

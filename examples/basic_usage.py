@@ -1,4 +1,4 @@
-from jupyterchat import *
+from jupyter_whisper import *
 
 # Basic chat interaction
 %%user 0

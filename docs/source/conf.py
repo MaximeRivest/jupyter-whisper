@@ -2,7 +2,7 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath('../..'))
 
-project = 'JupyterChat'
+project = 'JupyterWhisper'
 copyright = '2024, Maxime Rivest'
 author = 'Maxime Rivest'
 

@@ -6,7 +6,7 @@ Chat Interaction
 
 .. code-block:: python
 
-   from jupyterchat import *
+   from jupyter_whisper import *
 
    %%user 0
    How do I use Python's list comprehension?

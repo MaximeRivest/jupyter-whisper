@@ -3,7 +3,7 @@ Core Functionality
 
 Chat Interface
 ------------
-The core of JupyterChat is its chat interface, implemented through cell magic commands:
+The core of JupyterWhisper is its chat interface, implemented through cell magic commands:
 
 .. code-block:: python
 
@@ -15,7 +15,7 @@ The core of JupyterChat is its chat interface, implemented through cell magic co
 
 Cell Management
 -------------
-JupyterChat provides sophisticated cell output capture and management:
+JupyterWhisper provides sophisticated cell output capture and management:
 
 - Captures stdout, stderr, and cell outputs
 - Tracks execution timestamps
@@ -45,5 +45,5 @@ Install via pip:
 
 .. code-block:: bash
 
-   pip install jupyterchat
+   pip install jupyter_whisper
 
