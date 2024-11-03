@@ -822,5 +822,3 @@ def setup_jupyter_whisper():
     
     print("\nSetup complete! Configuration saved to:", config_manager.config_file)
     print("\nRestart your Jupyter kernel for changes to take effect.")
-
-__version__ = '0.1.2'  # Increment from 0.1.1

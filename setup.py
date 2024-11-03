@@ -1,4 +1,5 @@
 from setuptools import setup, find_packages
+import os
 
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
@@ -6,9 +7,15 @@ with open("README.md", "r", encoding="utf-8") as fh:
 with open("requirements.txt", "r", encoding="utf-8") as fh:
     requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
 
+def get_version():
+    version_file = os.path.join(os.path.dirname(__file__), 'jupyter_whisper', '__version__.py')
+    with open(version_file, 'r') as f:
+        exec(f.read())
+        return locals()['__version__']
+
 setup(
     name="jupyter_whisper",
-    version="0.1.0-beta.2",
+    version=get_version(),
     author="Maxime Rivest",
     author_email="mrive052@gmail.com",
     description="AI-Powered Chat Interface for Jupyter Notebooks",
