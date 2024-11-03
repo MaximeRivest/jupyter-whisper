@@ -11,10 +11,10 @@ setup(
     version="0.1.0-beta.1",
     author="Maxime Rivest",
     author_email="mrive052@gmail.com",
-    description="AI-Powered Chat Interface for Jupyter Notebooks with Claude integration",
+    description="AI-Powered Chat Interface for Jupyter Notebooks",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/MaximeRivest/jupyter_chat",
+    url="https://github.com/MaximeRivest/jupyter_whisper",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -37,7 +37,7 @@ setup(
     install_requires=requirements,
     include_package_data=True,
     project_urls={
-        "Bug Reports": "https://github.com/MaximeRivest/jupyter_chat/issues",
-        "Source": "https://github.com/MaximeRivest/jupyter_chat",
+        "Bug Reports": "https://github.com/MaximeRivest/jupyter_whisper/issues",
+        "Source": "https://github.com/MaximeRivest/jupyter_whisper",
     },
 )

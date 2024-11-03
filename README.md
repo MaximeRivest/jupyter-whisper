@@ -66,7 +66,7 @@ os.environ["PERPLEXITY_API_KEY"] = "your-key-here"  # For search
 2. Import and start using JupyterWhisper:
 
 ```python
-import jupyter_whisper as jc
+import jupyter_whisper as jw
 ```
 
 ## 💡 Usage
