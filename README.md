@@ -17,24 +17,53 @@ JupyterChat transforms your Jupyter notebook environment by seamlessly integrati
 ```bash
 pip install jupyterchat
 ```
-
 ## 📋 Requirements
 
 - Python 3.7+
 - Jupyter Notebook
 - Anthropic API key (for Claude integration)
-- OpenAI API key (optional, for voice features)
+- OpenAI API key (optional, for voice features) 
+- Perplexity API key (required for advanced search capabilities)
 
 ## 🏁 Quick Start
 
-1. Configure your API keys:
+<details>
+<summary>Linux/MacOS Configuration</summary>
 
 ```bash
-export ANTHROPIC_API_KEY='your-key-here'
-export OPENAI_API_KEY='your-key-here'  # Optional for voice features
+# Add to ~/.bashrc or ~/.zshrc
+echo 'export ANTHROPIC_API_KEY="your-key-here"' >> ~/.bashrc
+echo 'export OPENAI_API_KEY="your-key-here"' >> ~/.bashrc  # Optional for voice features
+echo 'export PERPLEXITY_API_KEY="your-key-here"' >> ~/.bashrc  # For search features
+source ~/.bashrc
 ```
+</details>
 
-2. Import the package:
+<details>
+<summary>Windows Configuration</summary>
+
+```powershell
+# Run in PowerShell as administrator
+[Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "your-key-here", "User")
+[Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "your-key-here", "User")
+[Environment]::SetEnvironmentVariable("PERPLEXITY_API_KEY", "your-key-here", "User")
+```
+</details>
+
+<details>
+<summary>Python Configuration</summary>
+
+```python
+import os
+
+# Set environment variables programmatically
+os.environ["ANTHROPIC_API_KEY"] = "your-key-here"
+os.environ["OPENAI_API_KEY"] = "your-key-here"      # Optional for voice
+os.environ["PERPLEXITY_API_KEY"] = "your-key-here"  # For search
+```
+</details>
+
+2. Import and start using JupyterChat:
 
 ```python
 import jupyterchat as jc
