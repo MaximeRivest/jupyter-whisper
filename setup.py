@@ -8,7 +8,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setup(
     name="jupyter_whisper",
-    version="0.1.0-beta.1",
+    version="0.1.0-beta.2",
     author="Maxime Rivest",
     author_email="mrive052@gmail.com",
     description="AI-Powered Chat Interface for Jupyter Notebooks",

@@ -1,12 +1,20 @@
-anthropic>=0.7.0
-ipython>=8.0.0
-fastapi>=0.68.0
-uvicorn>=0.15.0
-pydantic>=1.8.0
-requests>=2.26.0
-nest-asyncio>=1.5.0
-psutil>=5.8.0
-ipylab>=0.5.0
-openai>=1.0.0
-python-multipart>=0.0.5
+# Core dependencies
+jupyterlab>=4.2.0
+ipylab>=1.0.0
+jupyter-server>=2.14.0
+
+# AI Services
+anthropic>=0.37.0
+openai>=1.51.0
 claudette
+
+# Server components
+fastapi>=0.115.0
+uvicorn>=0.31.0
+nest-asyncio>=1.6.0
+pydantic>=2.9.0
+
+# Utilities
+requests>=2.32.0
+python-multipart>=0.0.5
+ipywidgets>=8.1.0

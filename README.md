@@ -20,15 +20,59 @@ pip install jupyter_whisper
 ## 📋 Requirements
 
 - Python 3.7+
-- Jupyter Notebook
-- Anthropic API key (for Claude integration)
-- OpenAI API key (optional, for voice features) 
-- Perplexity API key (required for advanced search capabilities)
+- JupyterLab 4.0+ (important: this extension is designed for JupyterLab, not classic Notebook)
+- Jupyter Notebook 7.0+ (if using Notebook instead of Lab)
+- Required API keys:
+  - Anthropic API key (for Claude integration)
+  - OpenAI API key (optional, for voice features) 
+  - Perplexity API key (for advanced search capabilities)
+
+### Installation Steps
+
+1. Install JupyterLab if you haven't already:
+```bash
+pip install jupyterlab>=4.0.0
+```
+
+2. Install Jupyter Whisper:
+```bash
+pip install jupyter_whisper
+```
+
+4. Start JupyterLab:
+```bash
+jupyter lab
+```
+
+### JupyterLab Compatibility
+
+JupyterWhisper is specifically designed and tested for JupyterLab 4.0+. While it may work in classic Jupyter Notebook (7.0+), we recommend using JupyterLab for the best experience and full feature support.
+
+Key compatibility notes:
+- Voice features require a modern browser
+- WebSocket support is required for real-time streaming
+- Some features may require JupyterLab extensions to be enabled
 
 ## 🏁 Quick Start
 
+### 1. Configure API Keys
+
+The easiest way to set up your API keys is using the built-in configuration tool:
+
+```python
+from jupyter_whisper import setup_jupyter_whisper
+setup_jupyter_whisper()
+```
+
+This will:
+- Guide you through entering your API keys
+- Securely store them in `~/.jupyter_whisper/config.json`
+- Make them available for all future sessions
+
+Alternative configuration methods:
+
 <details>
-<summary>Linux/MacOS Configuration</summary>
+<summary>Environment Variables (Linux/MacOS)</summary>
 
 ```bash
 # Add to ~/.bashrc or ~/.zshrc
@@ -40,7 +84,7 @@ source ~/.bashrc
 </details>
 
 <details>
-<summary>Windows Configuration</summary>
+<summary>Environment Variables (Windows)</summary>
 
 ```powershell
 # Run in PowerShell as administrator
@@ -51,7 +95,7 @@ source ~/.bashrc
 </details>
 
 <details>
-<summary>Python Configuration</summary>
+<summary>Direct Python Configuration</summary>
 
 ```python
 import os
@@ -63,7 +107,7 @@ os.environ["PERPLEXITY_API_KEY"] = "your-key-here"  # For search
 ```
 </details>
 
-2. Import and start using JupyterWhisper:
+### 2. Import and Use
 
 ```python
 import jupyter_whisper as jw
