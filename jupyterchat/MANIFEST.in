@@ -1,0 +1,3 @@
+
+recursive-include jupyterchat/static *.js
+recursive-include jupyterchat/config *.yaml
