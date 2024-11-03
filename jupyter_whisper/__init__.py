@@ -378,6 +378,12 @@ def post_run_cell(result):
         'type': determine_cell_type(raw_cell)
     }
 
+    # Display captured stdout/stderr immediately if not empty
+    if outputs['stdout']:
+        print(outputs['stdout'], end='')
+    if outputs['stderr']:
+        print(outputs['stderr'], file=sys.stderr, end='')
+
     # Check for errors
     if hasattr(result, 'error_in_exec') and result.error_in_exec is not None:
         output_data['error'] = str(result.error_in_exec)
@@ -817,4 +823,4 @@ def setup_jupyter_whisper():
     print("\nSetup complete! Configuration saved to:", config_manager.config_file)
     print("\nRestart your Jupyter kernel for changes to take effect.")
 
-__version__ = '0.1.1'  # Increment this
+__version__ = '0.1.2'  # Increment from 0.1.1
