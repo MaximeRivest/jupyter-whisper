@@ -76,7 +76,19 @@ if missing_keys:
     print(f"Warning: Missing API keys: {', '.join(missing_keys)}")
     print("Run setup_jupyter_whisper() to configure your API keys.")
 
-client = OpenAI()  # Will use OPENAI_API_KEY from environment/config
+# Modify OpenAI client initialization to be lazy-loaded
+client = None  # Initialize as None initially
+
+def get_openai_client():
+    global client
+    if client is None:
+        config_manager = get_config_manager()
+        if config_manager.get_api_key('OPENAI_API_KEY'):
+            client = OpenAI()  # Will use OPENAI_API_KEY from environment/config
+        else:
+            print("Warning: OpenAI API key not configured. Audio transcription will be unavailable.")
+            print("Run setup_jupyter_whisper() to configure your API keys.")
+    return client
 
 # Add global variable to store outputs
 cell_outputs = []  # List to store outputs
@@ -546,8 +558,7 @@ function hello() {
 """,
         "messages": [
             {"role": "user", "content": request.selectedText}
-        ],
-        "max_tokens": 1024
+        ]
     }
 
     try:
@@ -570,6 +581,13 @@ function hello() {
 
 @app.post("/audio")
 async def process_audio(audio: UploadFile = File(...)):
+    client = get_openai_client()
+    if client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="OpenAI API key not configured. Please run setup_jupyter_whisper() first."
+        )
+    
     # List of supported audio formats
     SUPPORTED_FORMATS = ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm']
     
