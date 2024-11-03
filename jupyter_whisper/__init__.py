@@ -1,7 +1,8 @@
 from .__version__ import __version__
 from .search import search_online
+from .config import get_config_manager
 
-__all__ = ['search_online', '__version__']
+__all__ = ['search_online', '__version__', 'setup_jupyter_whisper']
 from claudette import *
 from anthropic.types import Message, TextBlock
 from IPython.core.magic import register_cell_magic
@@ -69,7 +70,13 @@ model = "claude-3-5-sonnet-20241022"
 DEBUG = False  # Set this to True to enable debug output
 
 # Add OpenAI client initialization
-client = OpenAI()  # Will use OPENAI_API_KEY from environment  # Will use OPENAI_API_KEY from environment
+config_manager = get_config_manager()
+missing_keys = config_manager.ensure_api_keys()
+if missing_keys:
+    print(f"Warning: Missing API keys: {', '.join(missing_keys)}")
+    print("Run setup_jupyter_whisper() to configure your API keys.")
+
+client = OpenAI()  # Will use OPENAI_API_KEY from environment/config
 
 # Add global variable to store outputs
 cell_outputs = []  # List to store outputs
@@ -485,9 +492,14 @@ async def proxy(request: TextRequest):
     if DEBUG:
         print(f"Received request with text length: {len(request.selectedText)}")
     
-    api_key = os.getenv('ANTHROPIC_API_KEY')
+    config = get_config_manager()
+    api_key = config.get_api_key('ANTHROPIC_API_KEY')
+    
     if not api_key:
-        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY not found in environment")
+        raise HTTPException(
+            status_code=400, 
+            detail="ANTHROPIC_API_KEY not found. Please run setup_jupyter_whisper() to configure."
+        )
     
     url = 'https://api.anthropic.com/v1/messages'
     headers = {
@@ -644,6 +656,7 @@ def run_server():
     import asyncio
     from uvicorn.config import Config
     from uvicorn.server import Server
+    import tempfile
     
     port = 5000
     max_retries = 3
@@ -652,61 +665,47 @@ def run_server():
     if check_existing_server(port):
         return
     
-    # Add lock file to prevent race conditions
-    lock_file = f"/tmp/jchat_server_{port}.lock"
-    try:
-        if os.path.exists(lock_file):
-            # Check if the lock file is stale (older than 1 minute)
-            if time.time() - os.path.getctime(lock_file) > 60:
-                os.remove(lock_file)
-            else:
-                if DEBUG:
-                    print("Another server startup in progress, waiting...")
-                time.sleep(2)
-                # Recheck server after waiting
-                if check_existing_server(port):
-                    return
-                
-        with open(lock_file, 'w') as f:
-            f.write(str(os.getpid()))
+    # Use tempfile to handle lock file in a cross-platform way
+    with tempfile.NamedTemporaryFile(prefix='jchat_server_', suffix='.lock', delete=False) as temp_lock:
+        lock_file = temp_lock.name
+        
+        try:
+            if DEBUG:
+                print(f"Starting new FastAPI server on port {port}...")
+                print(f"API Key present: {'ANTHROPIC_API_KEY' in os.environ}")
             
-        if DEBUG:
-            print(f"Starting new FastAPI server on port {port}...")
-            print(f"API Key present: {'ANTHROPIC_API_KEY' in os.environ}")
-        
-        # Shutdown any existing non-responsive server
-        shutdown_existing_server()
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        nest_asyncio.apply()
-        
-        config = Config(
-            app=app, 
-            host="0.0.0.0", 
-            port=port, 
-            log_level="info" if DEBUG else "warning",
-            timeout_keep_alive=30,  # Reduce keep-alive timeout
-            limit_concurrency=100   # Limit concurrent connections
-        )
-        server = Server(config=config)
-        
-        try:
-            loop.run_until_complete(server.serve())
-            if DEBUG:
-                print("Server started successfully!")
-        except Exception as e:
-            if DEBUG:
-                print(f"Failed to start server: {e}")
-            raise
-    finally:
-        # Clean up lock file
-        try:
-            if os.path.exists(lock_file):
-                os.remove(lock_file)
-        except Exception as e:
-            if DEBUG:
-                print(f"Error removing lock file: {e}")
+            # Shutdown any existing non-responsive server
+            shutdown_existing_server()
+            
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            nest_asyncio.apply()
+            
+            config = Config(
+                app=app, 
+                host="0.0.0.0", 
+                port=port, 
+                log_level="info" if DEBUG else "warning",
+                timeout_keep_alive=30,
+                limit_concurrency=100
+            )
+            server = Server(config=config)
+            
+            try:
+                loop.run_until_complete(server.serve())
+                if DEBUG:
+                    print("Server started successfully!")
+            except Exception as e:
+                if DEBUG:
+                    print(f"Failed to start server: {e}")
+                raise
+        finally:
+            # Clean up lock file
+            try:
+                os.unlink(lock_file)
+            except Exception as e:
+                if DEBUG:
+                    print(f"Error removing lock file: {e}")
 
 @app.get("/status")
 async def status():
@@ -740,28 +739,80 @@ def inject_js():
     # Then read and inject the main code
     try:
         import os
-        package_dir = os.path.dirname(os.path.abspath(__file__))
-        static_dir = os.path.join(package_dir, 'static')
+        import pkg_resources
         
-        with open(os.path.join(static_dir, 'main.js'), 'r') as f:
-            main_js = f.read()
-        with open(os.path.join(static_dir, 'voicerecorder.js'), 'r') as f:
-            voice_js = f.read()
+        # Get the package's installed location
+        static_dir = pkg_resources.resource_filename('jupyter_whisper', 'static')
+        
+        # Ensure static directory exists
+        os.makedirs(static_dir, exist_ok=True)
+        
+        # Define default JS content if files don't exist
+        default_main_js = """// Default main.js content
+console.log('Using default main.js content');
+// Add your default main.js content here
+"""
+        default_voice_js = """// Default voicerecorder.js content
+console.log('Using default voicerecorder.js content');
+// Add your default voicerecorder.js content here
+"""
+        
+        # Try to read files, use defaults if not found
+        try:
+            with open(os.path.join(static_dir, 'main.js'), 'r') as f:
+                main_js = f.read()
+        except FileNotFoundError:
+            main_js = default_main_js
+            
+        try:
+            with open(os.path.join(static_dir, 'voicerecorder.js'), 'r') as f:
+                voice_js = f.read()
+        except FileNotFoundError:
+            voice_js = default_voice_js
             
         # Combine the JS code
-        js_code = voice_js + "\n\n" + main_js  # Load voice recorder first
+        js_code = voice_js + "\n\n" + main_js
         
         # Replace debug value
         js_code = js_code.replace('{debug_value}', 'true' if DEBUG else 'false')
         
         display(Javascript(js_code))
         
-    except FileNotFoundError as e:
-        print(f"Error: Could not find JavaScript files: {e}")
     except Exception as e:
-        print(f"Error loading JavaScript files: {e}")
+        print(f"Warning: Error loading JavaScript files: {e}")
+        print("Some features may be limited.")
 
 # Modify the server startup section to include the JS injection
 server_thread = threading.Thread(target=run_server, daemon=True)
 server_thread.start()
 inject_js()  # Add this line to inject the JavaScript when module is loaded
+
+def setup_jupyter_whisper():
+    """Interactive setup for Jupyter Whisper"""
+    config_manager = get_config_manager()
+    
+    print("Welcome to Jupyter Whisper Setup!")
+    print("\nPlease enter your API keys (press Enter to skip):")
+    
+    keys = {
+        'OPENAI_API_KEY': 'OpenAI API Key (for audio transcription)',
+        'ANTHROPIC_API_KEY': 'Anthropic API Key (for Claude)',
+        'PERPLEXITY_API_KEY': 'Perplexity API Key (for online search)'
+    }
+    
+    for env_key, display_name in keys.items():
+        current_value = config_manager.get_api_key(env_key)
+        if current_value:
+            print(f"\n{display_name} is already set.")
+            change = input("Would you like to change it? (y/N): ").lower()
+            if change == 'y':
+                new_value = input(f"Enter new {display_name}: ").strip()
+                if new_value:
+                    config_manager.set_api_key(env_key, new_value)
+        else:
+            new_value = input(f"Enter {display_name}: ").strip()
+            if new_value:
+                config_manager.set_api_key(env_key, new_value)
+    
+    print("\nSetup complete! Configuration saved to:", config_manager.config_file)
+    print("\nRestart your Jupyter kernel for changes to take effect.")

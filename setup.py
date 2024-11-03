@@ -40,4 +40,7 @@ setup(
         "Bug Reports": "https://github.com/MaximeRivest/jupyter_whisper/issues",
         "Source": "https://github.com/MaximeRivest/jupyter_whisper",
     },
+    package_data={
+        'jupyter_whisper': ['static/*.js'],
+    },
 )
