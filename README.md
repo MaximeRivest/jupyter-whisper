@@ -46,13 +46,26 @@ jupyter lab
 
 ### Important Note About Server Management
 
-Jupyter Whisper runs a local FastAPI server to handle certain features (like audio transcription and text processing). To ensure you're always using the latest configuration:
+Jupyter Whisper runs a local FastAPI server (on port 5000) to handle features like audio transcription and text processing. The server is shared between notebooks for efficiency.
 
-- The server automatically restarts when you import the library in a new notebook
-- Each restart uses your current configuration and API keys
-- Only one server instance runs at a time (port 5000)
+**Important Notes:**
+- The server persists between notebook sessions
+- Configuration changes (like API keys) only take effect when the server restarts
+- You'll be notified if you're using an older server version
 
-If you update your API keys or upgrade the package, simply restart your kernel and re-run your imports to ensure you're using the latest configuration.
+To manually refresh the server and apply new configurations:
+
+```python
+from jupyter_whisper import refresh_jupyter_whisper
+refresh_jupyter_whisper()  # Warning: affects all active notebooks
+```
+
+**When to refresh:**
+- After updating API keys
+- After upgrading the package
+- If you encounter configuration issues
+
+Note: Refreshing the server will impact all notebooks currently using it. You may need to restart kernels in affected notebooks.
 
 ### JupyterLab Compatibility
 

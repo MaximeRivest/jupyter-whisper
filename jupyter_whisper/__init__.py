@@ -885,18 +885,68 @@ def ensure_fresh_server():
         print("Failed to start fresh server")
     return False
 
-# Modify the module initialization
+def check_server_status():
+    """Check if there's an existing server and its version"""
+    try:
+        response = requests.get('http://localhost:5000/status', timeout=1)
+        if response.status_code == 200:
+            server_info = response.json()
+            current_version = server_info.get('version')
+            if current_version != __version__:
+                print(f"\n⚠️ Warning: Using existing server running version {current_version}")
+                print(f"Current package version is {__version__}")
+                print("To use the latest version, restart the server with: refresh_jupyter_whisper()")
+            if DEBUG:
+                print(f"Connected to existing server (PID: {server_info.get('pid')})")
+            return True
+    except requests.exceptions.RequestException:
+        return False
+
+def refresh_jupyter_whisper():
+    """Manually refresh the Jupyter Whisper server and configuration
+    
+    This will:
+    1. Shutdown any existing server (warning: affects all notebooks using it)
+    2. Clear cached configurations
+    3. Start a fresh server with current settings
+    
+    Use with caution as it will impact all notebooks using the server.
+    """
+    print("⚠️ Warning: This will restart the server and affect all active notebooks.")
+    confirm = input("Type 'yes' to continue: ")
+    if confirm.lower() != 'yes':
+        print("Cancelled.")
+        return
+    
+    if DEBUG:
+        print("Refreshing Jupyter Whisper...")
+    
+    # Shutdown existing server
+    shutdown_existing_server()
+    
+    # Clear OpenAI client
+    refresh_openai_client()
+    
+    # Start new server
+    run_server()
+    
+    print("✅ Server refreshed successfully!")
+    print("Note: You may need to restart kernels in affected notebooks.")
+
+# Modify initialization to check but not auto-restart
 def initialize_jupyter_whisper():
-    """Initialize everything when module is imported"""
-    # Initialize config
+    """Initialize Jupyter Whisper components"""
+    # Check config
     config_manager = get_config_manager()
     missing_keys = config_manager.ensure_api_keys()
     if missing_keys:
         print(f"Warning: Missing API keys: {', '.join(missing_keys)}")
         print("Run setup_jupyter_whisper() to configure your API keys.")
     
-    # Always ensure fresh server
-    ensure_fresh_server()
+    # Check server status
+    if not check_server_status():
+        # Only start new server if none exists
+        run_server()
     
     # Initialize other components
     inject_js()
