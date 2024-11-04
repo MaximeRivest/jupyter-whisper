@@ -39,10 +39,20 @@ pip install jupyterlab>=4.0.0
 pip install jupyter_whisper
 ```
 
-4. Start JupyterLab:
+3. Start JupyterLab:
 ```bash
 jupyter lab
 ```
+
+### Important Note About Server Management
+
+Jupyter Whisper runs a local FastAPI server to handle certain features (like audio transcription and text processing). To ensure you're always using the latest configuration:
+
+- The server automatically restarts when you import the library in a new notebook
+- Each restart uses your current configuration and API keys
+- Only one server instance runs at a time (port 5000)
+
+If you update your API keys or upgrade the package, simply restart your kernel and re-run your imports to ensure you're using the latest configuration.
 
 ### JupyterLab Compatibility
 
@@ -52,6 +62,7 @@ Key compatibility notes:
 - Voice features require a modern browser
 - WebSocket support is required for real-time streaming
 - Some features may require JupyterLab extensions to be enabled
+- Port 5000 must be available for the local server
 
 ## 🏁 Quick Start
 

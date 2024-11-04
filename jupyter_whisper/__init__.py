@@ -582,12 +582,22 @@ function hello() {
 
 @app.post("/audio")
 async def process_audio(audio: UploadFile = File(...)):
+    # Add debug logging
+    if DEBUG:
+        print("Audio processing request received")
+        print(f"Current OpenAI client configuration:")
+        print(f"- Environment key: {os.environ.get('OPENAI_API_KEY', 'Not set')[:8]}...")
+        
     client = get_openai_client()
     if client is None:
         raise HTTPException(
             status_code=400,
             detail="OpenAI API key not configured. Please run setup_jupyter_whisper() first."
         )
+    
+    # More debug logging
+    if DEBUG:
+        print(f"OpenAI client initialized with key: {client.api_key[:8]}...")
     
     # List of supported audio formats
     SUPPORTED_FORMATS = ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm']
@@ -734,11 +744,12 @@ def run_server():
 
 @app.get("/status")
 async def status():
-    """Health check endpoint"""
+    """Health check endpoint with server info"""
     return {
         "status": "ok",
         "pid": os.getpid(),
         "timestamp": time.time(),
+        "version": __version__,
         "memory_usage": psutil.Process().memory_info().rss / 1024 / 1024  # MB
     }
 
@@ -841,3 +852,58 @@ def setup_jupyter_whisper():
     
     print("\nSetup complete! Configuration saved to:", config_manager.config_file)
     print("\nRestart your Jupyter kernel for changes to take effect.")
+
+def ensure_fresh_server():
+    """Ensure we have a fresh server running with current configuration"""
+    if DEBUG:
+        print("Ensuring fresh server instance...")
+    
+    # Always kill existing server first
+    shutdown_existing_server()
+    
+    # Small delay to ensure port is freed
+    time.sleep(0.5)
+    
+    # Start new server
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+    
+    # Wait for server to be ready
+    max_retries = 5
+    for i in range(max_retries):
+        try:
+            response = requests.get('http://localhost:5000/status', timeout=1)
+            if response.status_code == 200:
+                if DEBUG:
+                    print(f"Fresh server started successfully (PID: {response.json().get('pid')})")
+                return True
+        except requests.exceptions.RequestException:
+            if i < max_retries - 1:  # Don't sleep on last attempt
+                time.sleep(0.5)
+    
+    if DEBUG:
+        print("Failed to start fresh server")
+    return False
+
+# Modify the module initialization
+def initialize_jupyter_whisper():
+    """Initialize everything when module is imported"""
+    # Initialize config
+    config_manager = get_config_manager()
+    missing_keys = config_manager.ensure_api_keys()
+    if missing_keys:
+        print(f"Warning: Missing API keys: {', '.join(missing_keys)}")
+        print("Run setup_jupyter_whisper() to configure your API keys.")
+    
+    # Always ensure fresh server
+    ensure_fresh_server()
+    
+    # Initialize other components
+    inject_js()
+    
+    # Make chat instance available
+    c = Chat(model, sp=sp)
+    get_ipython().user_ns['c'] = c
+
+# Call initialize when module is imported
+initialize_jupyter_whisper()
