@@ -67,7 +67,7 @@ If you want to help the user write about code the teaches them how to write code
 model = "claude-3-5-sonnet-20241022"
 
 # Add debug flag at the top with other imports
-DEBUG = False  # Set this to True to enable debug output
+DEBUG = True  # Set this to True to enable debug output
 
 # Add OpenAI client initialization
 config_manager = get_config_manager()
@@ -687,60 +687,80 @@ def check_existing_server(port=5000, retries=3, delay=0.5):
             continue
     return False
 
+# Global flag to track server initialization
+_server_initialized = False
+
+def start_server_if_needed():
+    """Start server only if no server is running"""
+    global _server_initialized
+    
+    # Prevent multiple initialization attempts
+    if _server_initialized:
+        return
+    
+    try:
+        response = requests.get('http://localhost:5000/status', timeout=1)
+        if response.status_code == 200:
+            server_info = response.json()
+            print(f"Using existing server (PID: {server_info.get('pid')})")
+            if DEBUG:
+                print(f"Server version: {server_info.get('version')}")
+                print(f"Memory usage: {server_info.get('memory_usage', 0):.2f} MB")
+            _server_initialized = True
+            return
+    except requests.exceptions.RequestException:
+        if DEBUG:
+            print("No existing server found, starting new one...")
+        
+        # Start new server in a thread
+        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread.start()
+        
+        # Wait for server to be ready
+        for _ in range(5):  # Try 5 times
+            time.sleep(1)  # Wait a bit between attempts
+            try:
+                requests.get('http://localhost:5000/status', timeout=1)
+                _server_initialized = True
+                return
+            except requests.exceptions.RequestException:
+                continue
+                
+        if DEBUG:
+            print("Warning: Server may not have started properly")
+
 def run_server():
+    """Start the FastAPI server"""
     import asyncio
     from uvicorn.config import Config
     from uvicorn.server import Server
-    import tempfile
     
-    port = 5000
-    max_retries = 3
+    if DEBUG:
+        print("Starting FastAPI server on port 5000...")
     
-    # Check if server already exists
-    if check_existing_server(port):
-        return
+    config = Config(
+        app=app, 
+        host="0.0.0.0", 
+        port=5000, 
+        log_level="warning",  # Reduce logging noise
+        timeout_keep_alive=30,
+        limit_concurrency=100
+    )
     
-    # Use tempfile to handle lock file in a cross-platform way
-    with tempfile.NamedTemporaryFile(prefix='jchat_server_', suffix='.lock', delete=False) as temp_lock:
-        lock_file = temp_lock.name
-        
-        try:
-            if DEBUG:
-                print(f"Starting new FastAPI server on port {port}...")
-                print(f"API Key present: {'ANTHROPIC_API_KEY' in os.environ}")
-            
-            # Shutdown any existing non-responsive server
-            shutdown_existing_server()
-            
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            nest_asyncio.apply()
-            
-            config = Config(
-                app=app, 
-                host="0.0.0.0", 
-                port=port, 
-                log_level="info" if DEBUG else "warning",
-                timeout_keep_alive=30,
-                limit_concurrency=100
-            )
-            server = Server(config=config)
-            
-            try:
-                loop.run_until_complete(server.serve())
-                if DEBUG:
-                    print("Server started successfully!")
-            except Exception as e:
-                if DEBUG:
-                    print(f"Failed to start server: {e}")
-                raise
-        finally:
-            # Clean up lock file
-            try:
-                os.unlink(lock_file)
-            except Exception as e:
-                if DEBUG:
-                    print(f"Error removing lock file: {e}")
+    server = Server(config=config)
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    nest_asyncio.apply()
+    
+    try:
+        loop.run_until_complete(server.serve())
+    except Exception as e:
+        if DEBUG:
+            print(f"Server error: {e}")
+
+# Initialize only once at import
+start_server_if_needed()
 
 @app.get("/status")
 async def status():
@@ -819,9 +839,8 @@ console.log('Using default voicerecorder.js content');
         print("Some features may be limited.")
 
 # Modify the server startup section to include the JS injection
-server_thread = threading.Thread(target=run_server, daemon=True)
-server_thread.start()
-inject_js()  # Add this line to inject the JavaScript when module is loaded
+start_server_if_needed()
+inject_js()
 
 def setup_jupyter_whisper():
     """Interactive setup for Jupyter Whisper"""
@@ -933,27 +952,44 @@ def refresh_jupyter_whisper():
     print("✅ Server refreshed successfully!")
     print("Note: You may need to restart kernels in affected notebooks.")
 
-# Modify initialization to check but not auto-restart
+# Remove automatic initialization during import
 def initialize_jupyter_whisper():
-    """Initialize Jupyter Whisper components"""
-    # Check config
-    config_manager = get_config_manager()
-    missing_keys = config_manager.ensure_api_keys()
-    if missing_keys:
-        print(f"Warning: Missing API keys: {', '.join(missing_keys)}")
-        print("Run setup_jupyter_whisper() to configure your API keys.")
+    """Initialize Jupyter Whisper components - must be called from within a notebook"""
+    try:
+        # Check if we're in IPython/Jupyter
+        get_ipython()
+    except NameError:
+        print("Warning: Not running in IPython/Jupyter environment")
+        return
+
+    # Check server status first
+    check_server_status()
     
-    # Check server status
-    if not check_server_status():
-        # Only start new server if none exists
-        run_server()
-    
-    # Initialize other components
+    # Initialize components only if needed
     inject_js()
     
     # Make chat instance available
     c = Chat(model, sp=sp)
     get_ipython().user_ns['c'] = c
 
-# Call initialize when module is imported
-initialize_jupyter_whisper()
+# Don't auto-initialize on import
+# Instead, let users call it explicitly or use magic commands
+
+def set_debug(value: bool):
+    """Enable or disable debug mode"""
+    global DEBUG
+    DEBUG = value
+    print(f"Debug mode {'enabled' if DEBUG else 'disabled'}")
+
+def refresh_openai_client():
+    """Force refresh the OpenAI client with current configuration"""
+    global client
+    client = None  # Reset the client
+    
+    # Force reload environment variables from config
+    config_manager = get_config_manager()
+    api_key = config_manager.get_api_key('OPENAI_API_KEY')
+    if api_key:
+        os.environ['OPENAI_API_KEY'] = api_key
+    
+    return get_openai_client()  # Get a fresh client with new configuration
