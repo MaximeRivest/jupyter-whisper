@@ -49,17 +49,7 @@ function showModal() {
     document.body.appendChild(modal);
     return modal;
 }
-// Function to get XSRF token from cookies
-function getXSRFToken() {
-    const cookies = document.cookie.split(';');
-    for (const cookie of cookies) {
-        const [name, value] = cookie.trim().split('=');
-        if (name === '_xsrf') {
-            return value;
-        }
-    }
-    return '';
-}
+
 
 // Function to get text from clipboard
 async function getClipboardText() {

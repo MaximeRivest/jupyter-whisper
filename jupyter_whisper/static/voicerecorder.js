@@ -1,7 +1,7 @@
 'use strict';
 
 // Helper function for modal
-function showModal() {
+function showAudioProcessingModal() {
     const modal = document.createElement('div');
     modal.style.cssText = `
         position: fixed;
@@ -62,7 +62,7 @@ const VoiceRecorderModule = (function() {
     }
 
     async function sendAudioToAPI(audioBlob) {
-        const modal = showModal();
+        const modal = showAudioProcessingModal();
         try {
             // Convert audio blob to .wav format
             const formData = new FormData();

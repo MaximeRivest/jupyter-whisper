@@ -1,6 +1,6 @@
 from .__version__ import __version__
 from .search import search_online
-from .config import get_config_manager
+from .config import get_config_manager, ConfigManager
 
 __all__ = ['search_online', '__version__', 'setup_jupyter_whisper']
 from claudette import *
@@ -30,41 +30,9 @@ import sys
 from IPython.core.interactiveshell import ExecutionResult
 from IPython.utils.capture import capture_output
 
-sp = """
-You are a general and helpful assistant.
-
-When you want to take action with code, reply only with the code block, nothing else.
-Using the code block you can run shell commands, python code, etc.
-
-You can run javascript code using code block. This javascript
-will run in the browser in the dev console.
-
-Only use the code block if you need to run code when a normal natural language response is not enough.
-
-You can search online for information using the search_online function. Wait for the user to ask you to search online.
-like this:
-
-```python
-style = "Be precise and concise. Use markdown code blocks for python code."
-question = "How many stars are there in our galaxy?"
-search_online(style, question)
-```
-
-
-```python
-style = "Be thorough and detailed. Use markdown code blocks for python code."
-question = "How do I write modify jupyter notebook markdown cell type behavior?"
-search_online(style, question)
-```
-
-When the code is not to be run be the user escape the backticks like that \\```bash -> \\```bash.
-
-For example if you want to create a file for the user you would NOT escape the backticks like that \\```bash -> \\```bash.
-If you want to create a file for the user you would use ```bash -> ```bash.
-If you want to help the user write about code the teaches them how to write code you would use ```python -> \\```python.
-"""
-#model = "claude-3-haiku-20240307"
-model = "claude-3-5-sonnet-20241022"
+# Get model from config
+config_manager = get_config_manager()
+model = config_manager.get_model()
 
 # Add debug flag at the top with other imports
 DEBUG = False  # Set this to True to enable debug output
@@ -118,24 +86,41 @@ class OutputCatcher:
 
 def create_assistant_cell():
     a = get_ipython()
-    last_response = c.h[-1].content[0].text
+    last_response = c.h[-1]['content']
     
-    # Replace the simple regex split with a more sophisticated parser
+    # Handle Claude 3 response format
+    if isinstance(last_response, list):
+        last_response = '\n'.join(block.text for block in last_response 
+                                if hasattr(block, 'text'))
+    
+    # Handle Claude 3 format in previous messages too
+    if len(c.h) > 1:
+        prev_content = c.h[-2]['content']
+        if isinstance(prev_content, list):
+            prev_content = '\n'.join(block.text for block in prev_content 
+                                   if hasattr(block, 'text'))
+            c.h[-2]['content'] = prev_content
+    
+    # Clear cell outputs from the last user message
+    if len(c.h) > 1 and isinstance(c.h[-2]['content'], str):
+        c.h[-2]['content'] = re.sub(r'<cell_outputs>.*</cell_outputs>', '', c.h[-2]['content'])
+    
+    # Function to split code blocks from the assistant's response
     def split_code_blocks(text):
         parts = []
         current_part = ""
         in_code_block = False
         code_lang = None
         i = 0
-        
+
         while i < len(text):
-            # Check if we're looking at an escaped backtick
+            # Check for escaped backticks
             if text[i:i+4] == '\\```':
-                current_part += '```'  # Add as literal backticks
+                current_part += '```'
                 i += 4
                 continue
-                
-            # Check if we're looking at a commented backtick
+
+            # Check for commented backticks
             is_commented = False
             if i > 0:
                 line_start = text.rfind('\n', 0, i)
@@ -143,22 +128,22 @@ def create_assistant_cell():
                     line_start = 0
                 line_prefix = text[line_start:i].lstrip()
                 is_commented = line_prefix.startswith('#') or line_prefix.startswith('//')
-            
+
+            # Start of code block
             if text[i:i+3] == '```' and not in_code_block and not is_commented:
-                # Start of code block
                 if current_part.strip():
                     parts.append(current_part)
                 current_part = text[i:i+3]
                 i += 3
-                # Check for language identifier
+                # Language identifier
                 lang_end = text.find('\n', i)
                 if lang_end != -1:
                     code_lang = text[i:lang_end].strip()
                     current_part += code_lang + '\n'
                     i = lang_end + 1
                 in_code_block = True
+            # End of code block
             elif text[i:i+3] == '```' and in_code_block:
-                # End of code block
                 current_part += text[i:i+3]
                 parts.append(current_part)
                 current_part = ""
@@ -168,40 +153,35 @@ def create_assistant_cell():
             else:
                 current_part += text[i]
                 i += 1
-        
+
         if current_part.strip():
             parts.append(current_part)
-        
+
         return parts
 
     parts = split_code_blocks(last_response)
-    
+
     app = JupyterFrontEnd()
-    
+
     count = 0
     for i, part in enumerate(parts):
-        if part.strip():  # Skip empty parts
+        if part.strip():
             if part.lstrip().startswith('```'):
                 # Handle code block
                 code_content = part
                 if code_content.startswith('```python'):
-                    # Python gets special treatment - no %% prefix needed
+                    # Remove language identifier and closing backticks
                     code_content = code_content.replace('```python\n', '', 1).replace('```', '')
                     code_content = f"\n#%%assistant {len(c.h)-1}\n{code_content}"
                 else:
-                    # For any other language:
-                    # 1. Extract language from ```language pattern
-                    # 2. Convert to magic command format
+                    # Handle other languages
                     match = re.match(r'```(\w+)\n', code_content)
                     if match:
                         lang = match.group(1)
-                        # Special case: 'r' needs to be uppercase
                         lang = 'R' if lang.lower() == 'r' else lang
-                        # Remove ```language and closing ```
                         code_content = re.sub(r'```\w+\n', '', code_content, 1).replace('```', '')
-                        # Format with %%language on first line
                         code_content = f"%%{lang}\n#%%assistant {len(c.h)-1}\n{code_content}"
-                
+
                 # Insert code cell
                 if count == 0:
                     app.commands.execute('notebook:insert-cell-above')
@@ -226,46 +206,46 @@ def create_assistant_cell():
                 app.commands.execute('notebook:replace-selection', {'text': markdown_content})
                 app.commands.execute('notebook:change-cell-to-markdown')
                 app.commands.execute('notebook:run-cell')
-            
+
             time.sleep(0.4)
-            # Scroll to make the active cell visible
             app.commands.execute('notebook:scroll-cell-center')
-    
+
     # Create the next user cell
     app.commands.execute('notebook:insert-cell-below')
     time.sleep(0.2)
     app.commands.execute('notebook:replace-selection', {'text': f"%%user {len(c.h)}\n\n"})
-    # Ensure the final cell is visible
     app.commands.execute('notebook:scroll-cell-center')
-    # clear cell outputs from the last user message
-    c.h[-2]['content'][0].text = re.sub(r'<cell_outputs>.*</cell_outputs>', '', c.h[-2]['content'][0].text)
+
 
 def go(cell):
     # Replace empty cell or whitespace-only cell with 'continue'
     if not cell or cell.isspace():
         cell = 'continue'
-        
-    # Process any {} expressions in the cell using regex
+
+    # Process expressions within {}
     pattern = r'\{([^}]+)\}'
-    
+
     def eval_match(match):
         expr = match.group(1)
         try:
-            # Get the IPython shell and its user namespace
             shell = get_ipython()
-            # Evaluate the expression in the user namespace
             result = eval(expr, shell.user_ns)
             return str(result)
         except Exception as e:
             return f"[Error: {str(e)}]"
-    
+
     cell = re.sub(pattern, eval_match, cell)
     app = JupyterFrontEnd()
     words = 0
     text = ""
+
     for word_piece in c(cell + f"""<cell_outputs> In here you have all the current jupyter context that we run so far. Use judiciously. {cell_outputs}</cell_outputs>""", stream=True):
         words += 1
-        text += word_piece
+        # Handle Claude 3 response format
+        if isinstance(word_piece, (list, TextBlock)):
+            text += word_piece.text if hasattr(word_piece, 'text') else ''
+        else:
+            text += word_piece
         if words % 20 == 0:
             clear_output(wait=False)
             display(Markdown(text))
@@ -274,7 +254,8 @@ def go(cell):
     create_assistant_cell()
 
 # Initialize c in the global namespace when module is loaded
-c = Chat(model, sp = sp)
+config_manager = get_config_manager()
+c = Chat(model, sp=config_manager.get_system_prompt())
 get_ipython().user_ns['c'] = c  # Make c available in user's namespace
 
 @register_cell_magic
@@ -282,42 +263,69 @@ def user(line, cell):
     global c
     parts = line.split(':')
     index = int(parts[0]) if parts[0] else len(c.h)
-    wipe = len(parts) > 1 and parts[1] == 'wipe'
-    
+    action = parts[1] if len(parts) > 1 else None
+
     if index == 0:
-        c = Chat(model, sp = sp)
+        config_manager = get_config_manager()
+        c = Chat(model, sp=config_manager.get_system_prompt())
         get_ipython().user_ns['c'] = c  # Update c in user's namespace when reset
-    
+
+    if action == 'set':
+        # Set the content without running or creating next cell
+        if index < len(c.h):
+            c.h[index] = {'role': 'user', 'content': cell}
+        else:
+            c.h.append({'role': 'user', 'content': cell})
+        return  # Early return
+
     if index < len(c.h):
-        if wipe:
+        if action == 'wipe':
             c.h = c.h[:index]
             go(cell)
-
         else:
             c.h[index] = {'role': 'user', 'content': cell}
+            go(cell)
     else:
         go(cell)
 
 @register_cell_magic
 def assistant(line, cell):
     parts = line.split(':')
-    index = int(parts[0]) if parts[0] else len(c.h) - 1
-    wipe = len(parts) > 1 and parts[1] == 'wipe'
-    
-    if wipe:
-        c.h = c.h[:index]
-    
-    if index < len(c.h):
-        c.h[index] = {'role': 'assistant', 'content': cell}
-    else:
-        c.h.append({'role': 'assistant', 'content': cell})
-    
-    # Create a new cell below with %%user magic
-    new_cell = f"%%user {len(c.h)}\n\n"
-    a = get_ipython()
-    a.set_next_input(new_cell, replace=False)
+    index_str = parts[0]
+    action = parts[1] if len(parts) > 1 else None
 
+    # Parse main index
+    main_index = int(index_str) if index_str else len(c.h) - 1
 
+    if action == 'add':
+        # For add action, concatenate with existing content
+        if main_index < len(c.h):
+            existing_content = c.h[main_index].get('content', '')
+            if isinstance(existing_content, list):
+                # Handle Claude 3 format - convert to string first
+                existing_content = '\n'.join(block.text for block in existing_content 
+                                          if hasattr(block, 'text'))
+            
+            # Add a newline between existing and new content if both exist
+            separator = '\n' if existing_content and cell else ''
+            new_content = existing_content + separator + cell
+            
+            # Update the content
+            c.h[main_index]['content'] = new_content
+        else:
+            # Append new entry if index doesn't exist
+            c.h.append({'role': 'assistant', 'content': cell})
+        return  # Early return
+    
+    elif action == 'set':
+        # For set action, completely replace the content
+        if main_index < len(c.h):
+            c.h[main_index]['content'] = cell
+        else:
+            c.h.append({'role': 'assistant', 'content': cell})
+        return  # Early return
+
+    # Rest of the function remains unchanged...
 
 a = get_ipython()
 # Load R and Julia extensions if available
@@ -842,154 +850,199 @@ console.log('Using default voicerecorder.js content');
 start_server_if_needed()
 inject_js()
 
-def setup_jupyter_whisper():
+def setup_jupyter_whisper(force_display=False):
     """Interactive setup for Jupyter Whisper"""
-    config_manager = get_config_manager()
-    
-    print("Welcome to Jupyter Whisper Setup!")
-    print("\nPlease enter your API keys (press Enter to skip):")
-    
-    keys = {
-        'OPENAI_API_KEY': 'OpenAI API Key (for audio transcription)',
-        'ANTHROPIC_API_KEY': 'Anthropic API Key (for Claude)',
-        'PERPLEXITY_API_KEY': 'Perplexity API Key (for online search)'
-    }
-    
-    for env_key, display_name in keys.items():
-        current_value = config_manager.get_api_key(env_key)
-        if current_value:
-            print(f"\n{display_name} is already set.")
-            change = input("Would you like to change it? (y/N): ").lower()
-            if change == 'y':
-                new_value = input(f"Enter new {display_name}: ").strip()
-                if new_value:
-                    config_manager.set_api_key(env_key, new_value)
-        else:
-            new_value = input(f"Enter {display_name}: ").strip()
-            if new_value:
-                config_manager.set_api_key(env_key, new_value)
-    
-    print("\nSetup complete! Configuration saved to:", config_manager.config_file)
-    print("\nRestart your Jupyter kernel for changes to take effect.")
-
-def ensure_fresh_server():
-    """Ensure we have a fresh server running with current configuration"""
-    if DEBUG:
-        print("Ensuring fresh server instance...")
-    
-    # Always kill existing server first
-    shutdown_existing_server()
-    
-    # Small delay to ensure port is freed
-    time.sleep(0.5)
-    
-    # Start new server
-    server_thread = threading.Thread(target=run_server, daemon=True)
-    server_thread.start()
-    
-    # Wait for server to be ready
-    max_retries = 5
-    for i in range(max_retries):
-        try:
-            response = requests.get('http://localhost:5000/status', timeout=1)
-            if response.status_code == 200:
-                if DEBUG:
-                    print(f"Fresh server started successfully (PID: {response.json().get('pid')})")
-                return True
-        except requests.exceptions.RequestException:
-            if i < max_retries - 1:  # Don't sleep on last attempt
-                time.sleep(0.5)
-    
-    if DEBUG:
-        print("Failed to start fresh server")
-    return False
-
-def check_server_status():
-    """Check if there's an existing server and its version"""
     try:
-        response = requests.get('http://localhost:5000/status', timeout=1)
-        if response.status_code == 200:
-            server_info = response.json()
-            current_version = server_info.get('version')
-            if current_version != __version__:
-                print(f"\n⚠️ Warning: Using existing server running version {current_version}")
-                print(f"Current package version is {__version__}")
-                print("To use the latest version, restart the server with: refresh_jupyter_whisper()")
-            if DEBUG:
-                print(f"Connected to existing server (PID: {server_info.get('pid')})")
-            return True
-    except requests.exceptions.RequestException:
-        return False
+        import ipywidgets as widgets
+        from IPython.display import display, HTML, clear_output
+        
+        config_manager = get_config_manager()
+        
+        # Check if setup should be skipped
+        if not force_display and config_manager.get_config_value('SKIP_SETUP_POPUP', False):
+            return
 
-def refresh_jupyter_whisper():
-    """Manually refresh the Jupyter Whisper server and configuration
-    
-    This will:
-    1. Shutdown any existing server (warning: affects all notebooks using it)
-    2. Clear cached configurations
-    3. Start a fresh server with current settings
-    
-    Use with caution as it will impact all notebooks using the server.
-    """
-    print("⚠️ Warning: This will restart the server and affect all active notebooks.")
-    confirm = input("Type 'yes' to continue: ")
-    if confirm.lower() != 'yes':
-        print("Cancelled.")
-        return
-    
-    if DEBUG:
-        print("Refreshing Jupyter Whisper...")
-    
-    # Shutdown existing server
-    shutdown_existing_server()
-    
-    # Clear OpenAI client
-    refresh_openai_client()
-    
-    # Start new server
-    run_server()
-    
-    print("✅ Server refreshed successfully!")
-    print("Note: You may need to restart kernels in affected notebooks.")
+        # Style for the UI
+        display(HTML("""
+        <style>
+            .widget-label { font-weight: bold; }
+            .setup-header { 
+                font-size: 1.2em; 
+                margin-bottom: 1em; 
+                padding: 0.5em;
+                background: #f0f0f0;
+                border-radius: 4px;
+                color: black;
+            }
+            .key-status {
+                margin-top: 0.5em;
+                font-style: italic;
+            }
+            .section-header {
+                font-weight: bold;
+                margin-top: 1em;
+                margin-bottom: 0.5em;
+                padding: 0.3em;
+                background: #e0e0e0;
+                border-radius: 4px;
+            }
+        </style>
+        """))
+        
+        display(HTML('<div class="setup-header">🔧 Jupyter Whisper Setup</div>'))
+        
+        # Create tabs for different settings
+        tab = widgets.Tab()
+        api_keys_tab = widgets.VBox()
+        model_tab = widgets.VBox()
+        system_prompt_tab = widgets.VBox()
+        
+        # API Keys Section
+        keys = {
+            'OPENAI_API_KEY': {
+                'display': 'OpenAI API Key (for audio transcription)',
+                'validate': lambda x: x.startswith('sk-') and len(x) > 20,
+                'widget': None
+            },
+            'ANTHROPIC_API_KEY': {
+                'display': 'Anthropic API Key (for Claude)',
+                'validate': lambda x: x.startswith(('sk-', 'ant-')) and len(x) > 20,
+                'widget': None
+            },
+            'PERPLEXITY_API_KEY': {
+                'display': 'Perplexity API Key (for online search)',
+                'validate': lambda x: x.startswith('pplx-') and len(x) > 20,
+                'widget': None
+            }
+        }
+        
+        api_key_widgets = []
+        for key_name, key_info in keys.items():
+            current_value = config_manager.get_api_key(key_name)
+            masked_value = f"{current_value[:8]}...{current_value[-4:]}" if current_value else ""
+            
+            key_input = widgets.Password(
+                placeholder=f'Enter {key_info["display"]}',
+                value=current_value or '',
+                description=key_info['display'],
+                style={'description_width': 'initial'},
+                layout=widgets.Layout(width='80%')
+            )
+            
+            keys[key_name]['widget'] = key_input
+            api_key_widgets.append(key_input)
+            if current_value:
+                api_key_widgets.append(widgets.HTML(
+                    f'<div class="key-status">Current value: {masked_value}</div>'
+                ))
+        
+        api_keys_tab.children = api_key_widgets
+        
+        # Model Selection Section
+        model_dropdown = widgets.Dropdown(
+            options=ConfigManager.AVAILABLE_MODELS,
+            value=config_manager.get_model(),
+            description='Model:',
+            style={'description_width': 'initial'},
+            layout=widgets.Layout(width='50%')
+        )
+        
+        model_tab.children = [
+            widgets.HTML('<div class="section-header">Model Selection</div>'),
+            model_dropdown,
+            widgets.HTML('<div class="key-status">Select the Claude model to use for chat interactions.</div>')
+        ]
+        
+        # System Prompt Section
+        system_prompt = widgets.Textarea(
+            value=config_manager.get_system_prompt(),
+            placeholder='Enter system prompt...',
+            description='System Prompt:',
+            disabled=False,
+            layout=widgets.Layout(width='95%', height='400px')
+        )
+        
+        system_prompt_tab.children = [
+            widgets.HTML('<div class="section-header">System Prompt</div>'),
+            system_prompt,
+            widgets.HTML('<div class="key-status">Customize the system prompt that defines the assistant\'s behavior.</div>')
+        ]
+        
+        # Setup tabs
+        tab.children = [api_keys_tab, model_tab, system_prompt_tab]
+        tab.set_title(0, "API Keys")
+        tab.set_title(1, "Model")
+        tab.set_title(2, "System Prompt")
+        
+        display(tab)
+        
+        # Add checkbox for popup preference
+        skip_setup_checkbox = widgets.Checkbox(
+            value=config_manager.get_config_value('SKIP_SETUP_POPUP', False),
+            description='Don\'t show this setup popup on startup',
+            indent=False,
+            layout=widgets.Layout(margin='20px 0')
+        )
+        
+        display(skip_setup_checkbox)
+        
+        status_output = widgets.Output()
+        display(status_output)
+        
+        save_button = widgets.Button(
+            description='Save Configuration',
+            button_style='primary',
+            icon='check'
+        )
+        
+        def on_save_clicked(b):
+            global c, model  # Access global variables
+            with status_output:
+                clear_output()
+                
+                # Save API keys
+                for key_name, key_info in keys.items():
+                    widget = key_info['widget']
+                    value = widget.value.strip()
+                    if value and key_info['validate'](value):
+                        config_manager.set_api_key(key_name, value)
+                
+                # Save model selection
+                new_model = model_dropdown.value
+                config_manager.set_model(new_model)
+                
+                # Save system prompt
+                config_manager.set_system_prompt(system_prompt.value)
+                
+                # Save popup preference
+                config_manager.set_config_value('SKIP_SETUP_POPUP', skip_setup_checkbox.value)
+                
+                # Reinitialize chat with new settings
+                model = new_model
+                c = Chat(model, sp=system_prompt.value)
+                get_ipython().user_ns['c'] = c
+                
+                # Check for missing keys
+                missing_keys = config_manager.ensure_api_keys()
+                if missing_keys:
+                    print("\n⚠️ Warning: The following keys are still missing:")
+                    for key in missing_keys:
+                        print(f"- {key}")
+                    print("\nSome features may be limited.")
+                else:
+                    print("\n✅ All required API keys are configured!")
+                
+                print("\n✅ Model and system prompt updated!")
+                print("\n🔄 Configuration saved successfully!")
+        
+        save_button.on_click(on_save_clicked)
+        display(save_button)
+        
+    except ImportError:
+        print("Please install ipywidgets: pip install ipywidgets")
+    except Exception as e:
+        print(f"\nError during setup: {str(e)}")
+        print("Please try again or report this issue if it persists.")
 
-# Remove automatic initialization during import
-def initialize_jupyter_whisper():
-    """Initialize Jupyter Whisper components - must be called from within a notebook"""
-    try:
-        # Check if we're in IPython/Jupyter
-        get_ipython()
-    except NameError:
-        print("Warning: Not running in IPython/Jupyter environment")
-        return
-
-    # Check server status first
-    check_server_status()
-    
-    # Initialize components only if needed
-    inject_js()
-    
-    # Make chat instance available
-    c = Chat(model, sp=sp)
-    get_ipython().user_ns['c'] = c
-
-# Don't auto-initialize on import
-# Instead, let users call it explicitly or use magic commands
-
-def set_debug(value: bool):
-    """Enable or disable debug mode"""
-    global DEBUG
-    DEBUG = value
-    print(f"Debug mode {'enabled' if DEBUG else 'disabled'}")
-
-def refresh_openai_client():
-    """Force refresh the OpenAI client with current configuration"""
-    global client
-    client = None  # Reset the client
-    
-    # Force reload environment variables from config
-    config_manager = get_config_manager()
-    api_key = config_manager.get_api_key('OPENAI_API_KEY')
-    if api_key:
-        os.environ['OPENAI_API_KEY'] = api_key
-    
-    return get_openai_client()  # Get a fresh client with new configuration
+# Call setup on import if needed
+setup_jupyter_whisper()
