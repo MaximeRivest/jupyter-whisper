@@ -77,65 +77,50 @@ Key compatibility notes:
 - Some features may require JupyterLab extensions to be enabled
 - Port 5000 must be available for the local server
 
-## 🏁 Quick Start
+## 🔧 Configuration
 
-### 1. Configure API Keys
+### Interactive Setup
 
-The easiest way to set up your API keys is using the built-in configuration tool:
-
-```python
-from jupyter_whisper import setup_jupyter_whisper
-setup_jupyter_whisper()
-```
-
-This will:
-- Guide you through entering your API keys
-- Securely store them in `~/.jupyter_whisper/config.json`
-- Make them available for all future sessions
-
-Alternative configuration methods:
-
-<details>
-<summary>Environment Variables (Linux/MacOS)</summary>
-
-```bash
-# Add to ~/.bashrc or ~/.zshrc
-echo 'export ANTHROPIC_API_KEY="your-key-here"' >> ~/.bashrc
-echo 'export OPENAI_API_KEY="your-key-here"' >> ~/.bashrc  # Optional for voice features
-echo 'export PERPLEXITY_API_KEY="your-key-here"' >> ~/.bashrc  # For search features
-source ~/.bashrc
-```
-</details>
-
-<details>
-<summary>Environment Variables (Windows)</summary>
-
-```powershell
-# Run in PowerShell as administrator
-[Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "your-key-here", "User")
-[Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "your-key-here", "User")
-[Environment]::SetEnvironmentVariable("PERPLEXITY_API_KEY", "your-key-here", "User")
-```
-</details>
-
-<details>
-<summary>Direct Python Configuration</summary>
+The easiest way to configure Jupyter Whisper is through the interactive setup interface:
 
 ```python
-import os
-
-# Set environment variables programmatically
-os.environ["ANTHROPIC_API_KEY"] = "your-key-here"
-os.environ["OPENAI_API_KEY"] = "your-key-here"      # Optional for voice
-os.environ["PERPLEXITY_API_KEY"] = "your-key-here"  # For search
+import jupyter_whisper
 ```
-</details>
 
-### 2. Import and Use
+This will open an interactive UI with tabs for:
+- API Keys configuration
+- Model selection
+- System prompt customization
+
+### Manual Configuration
+
+You can also configure settings programmatically:
 
 ```python
-import jupyter_whisper as jw
+from jupyter_whisper.config import get_config_manager
+config = get_config_manager()
+
+# Set API keys
+config.set_api_key('ANTHROPIC_API_KEY', 'your-key-here')
+config.set_api_key('OPENAI_API_KEY', 'your-key-here')      # Optional for voice
+config.set_api_key('PERPLEXITY_API_KEY', 'your-key-here')  # For search
+
+# Change the model
+config.set_model('claude-3-5-sonnet-20241022')
+
+# Update system prompt
+config.set_system_prompt("Your custom system prompt here")
+
+# Set other preferences
+config.set_config_value('SKIP_SETUP_POPUP', True)
 ```
+
+Available models:
+- claude-3-5-sonnet-20241022
+- claude-3-5-haiku-20241022
+- claude-3-opus-20240229
+- claude-3-sonnet-20240229
+- claude-3-haiku-20240307
 
 ## 💡 Usage
 
@@ -153,6 +138,7 @@ How do I read a CSV file using pandas?
 Access web information directly within your notebook:
 
 ```python
+from jupyter_whisper import search_online
 style = "Be precise and concise"
 question = "What's new in Python 3.12?"
 search_online(style, question)
@@ -165,28 +151,30 @@ Leverage voice input capabilities:
 - Automatic speech-to-text conversion
 - Seamless chat interface integration
 
-### History Management
-
-Access your conversation history:
-
-```python
-hist()  # Display formatted chat history
-```
-
 ## 🛠️ Advanced Features
 
 ### Magic Commands
 
 - `%%user [index]` - Initiate a user message
+- `%%user [index]:set` - Replace user message at given index
 - `%%assistant [index]` - Include assistant response
-- Multi-language support (Python, R, SQL, etc.)
+- `%%assistant [index]:set` - Replace assistant message at given index
+- `%%assistant [index]:add` - Concatenate content to existing assistant message
 
-### Smart Processing
+Example usage:
+```python
+%%user 3:set
+How do I read a CSV file?
 
-- Automatic code detection and execution
-- Dynamic cell type conversion
-- Live markdown rendering
-- Syntax highlighting support
+%%assistant 3:set
+Here's how to read a CSV file using pandas:
+import pandas as pd
+df = pd.read_csv('file.csv')
+
+%%assistant 3:add
+You can also specify additional parameters:
+df = pd.read_csv('file.csv', encoding='utf-8')
+```
 
 ## 🔧 Development
 
@@ -196,12 +184,6 @@ hist()  # Display formatted chat history
 git clone https://github.com/yourusername/jupyter_whisper.git
 cd jupyter_whisper
 pip install -e ".[dev]"
-```
-
-### Running Tests
-
-```bash
-python -m pytest tests/
 ```
 
 ## 🤝 Contributing
