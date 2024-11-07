@@ -78,7 +78,7 @@ async function keyboardShortcutHandler(event) {
             const modal = showModal();
             try {
                 if (DEBUG) console.log("Sending request to server...");
-                const response = await fetch('http://localhost:5000/proxy', {
+                const response = await fetch('http://localhost:5000/quick_edit', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

@@ -3,10 +3,9 @@ from .search import search_online
 from .config import get_config_manager, ConfigManager
 
 __all__ = ['search_online', '__version__', 'setup_jupyter_whisper']
-from claudette import *
-from anthropic.types import Message, TextBlock
+from anthropic.types import  TextBlock
 from IPython.core.magic import register_cell_magic
-from IPython.display import display, update_display, clear_output, Markdown
+from IPython.display import display,  clear_output, Markdown
 import time
 import re
 from .search import search_online
@@ -14,12 +13,10 @@ from IPython.display import Javascript
 from ipylab import JupyterFrontEnd
 from fastapi import FastAPI, HTTPException, File, UploadFile
 from pydantic import BaseModel
-import uvicorn
 import os
 import requests
 import threading
 import nest_asyncio
-import asyncio
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 import psutil
@@ -27,8 +24,6 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from io import StringIO
 import sys
-from IPython.core.interactiveshell import ExecutionResult
-from IPython.utils.capture import capture_output
 
 # Get model from config
 config_manager = get_config_manager()
@@ -238,7 +233,6 @@ def go(cell):
     app = JupyterFrontEnd()
     words = 0
     text = ""
-
     for word_piece in c(cell + f"""<cell_outputs> In here you have all the current jupyter context that we run so far. Use judiciously. {cell_outputs}</cell_outputs>""", stream=True):
         words += 1
         # Handle Claude 3 response format
@@ -252,11 +246,6 @@ def go(cell):
             app.commands.execute('notebook:scroll-cell-center')
     clear_output(wait=False)
     create_assistant_cell()
-
-# Initialize c in the global namespace when module is loaded
-config_manager = get_config_manager()
-c = Chat(model, sp=config_manager.get_system_prompt())
-get_ipython().user_ns['c'] = c  # Make c available in user's namespace
 
 @register_cell_magic
 def user(line, cell):
@@ -513,8 +502,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.post("/proxy")
-async def proxy(request: TextRequest):
+@app.post("/quick_edit")
+async def quick_edit(request: TextRequest):
     if DEBUG:
         print(f"Received request with text length: {len(request.selectedText)}")
     
@@ -534,36 +523,13 @@ async def proxy(request: TextRequest):
         'content-type': 'application/json'
     }
 
+    # Get quick edit configurations
+    quick_edit_model = config.get_config_value('QUICK_EDIT_MODEL', 'claude-3-5-sonnet-20241022')
+    quick_edit_system_prompt = config.get_config_value('QUICK_EDIT_SYSTEM_PROMPT')
+
     data = {
-        "model": "claude-3-5-sonnet-20241022",
-        "system": """
-You are a precise text and code editor. Your task is to:
-
-1. Process provided text/code snippets
-2. Make necessary improvements and corrections
-3. Instructions are in !!double exclamation!!
-
-
-Rules:
-- Return ONLY the edited text/code
-- Remove all double exclamation annotations in the final output
-- Keep HTML comments if needed to explain rationale
-- Maintain the original format and structure
-- Focus on clarity, correctness and best practices
-
-Example:
-<example1>
-user:
-function hello() {
-    console.log('hello') !!Add semicolon!!
-}
-assistant:
-function hello() {
-    console.log('hello');
-}
-</example1>
-
-""",
+        "model": quick_edit_model,
+        "system": quick_edit_system_prompt,
         "messages": [
             {"role": "user", "content": request.selectedText}
         ],
@@ -896,6 +862,7 @@ def setup_jupyter_whisper(force_display=False):
         api_keys_tab = widgets.VBox()
         model_tab = widgets.VBox()
         system_prompt_tab = widgets.VBox()
+        quick_edit_tab = widgets.VBox()
         
         # API Keys Section
         keys = {
@@ -939,18 +906,41 @@ def setup_jupyter_whisper(force_display=False):
         api_keys_tab.children = api_key_widgets
         
         # Model Selection Section
+        # Create a list of tuples (display_name, model_name) for all models
+        model_options = []
+        for provider, models in ConfigManager.AVAILABLE_MODELS.items():
+            if models:  # Only add providers that have models
+                # Add provider as a disabled header
+                model_options.append((f"=== {provider.upper()} ===", None))
+                # Add models for this provider
+                model_options.extend([(f"{model}", model) for model in models])
+        
+        current_model = config_manager.get_model()
+        
         model_dropdown = widgets.Dropdown(
-            options=ConfigManager.AVAILABLE_MODELS,
-            value=config_manager.get_model(),
+            options=model_options,
+            value=current_model,
             description='Model:',
             style={'description_width': 'initial'},
             layout=widgets.Layout(width='50%')
         )
         
+        # Add provider selection that updates when model changes
+        def on_model_change(change):
+            if change['new']:
+                # Extract provider from selected model
+                selected_model = change['new']
+                for provider, models in ConfigManager.AVAILABLE_MODELS.items():
+                    if selected_model in models:
+                        config_manager.set_model_provider(provider)
+                        break
+        
+        model_dropdown.observe(on_model_change, names='value')
+        
         model_tab.children = [
             widgets.HTML('<div class="section-header">Model Selection</div>'),
             model_dropdown,
-            widgets.HTML('<div class="key-status">Select the Claude model to use for chat interactions.</div>')
+            widgets.HTML('<div class="key-status">Select the model to use for chat interactions.</div>')
         ]
         
         # System Prompt Section
@@ -968,11 +958,45 @@ def setup_jupyter_whisper(force_display=False):
             widgets.HTML('<div class="key-status">Customize the system prompt that defines the assistant\'s behavior.</div>')
         ]
         
-        # Setup tabs
-        tab.children = [api_keys_tab, model_tab, system_prompt_tab]
+        # Rename the tab and its components
+        quick_edit_model_options = []
+        for provider, models in ConfigManager.AVAILABLE_MODELS.items():
+            if models:
+                quick_edit_model_options.extend([(f"{model}", model) for model in models])
+        
+        current_quick_edit_model = config_manager.get_config_value('QUICK_EDIT_MODEL', 'claude-3-5-sonnet-20241022')
+        
+        quick_edit_model_dropdown = widgets.Dropdown(
+            options=quick_edit_model_options,
+            value=current_quick_edit_model,
+            description='Quick Edit Model:',
+            style={'description_width': 'initial'},
+            layout=widgets.Layout(width='50%')
+        )
+        
+        quick_edit_system_prompt = widgets.Textarea(
+            value=config_manager.get_config_value('QUICK_EDIT_SYSTEM_PROMPT'),
+            placeholder='Enter Quick Edit system prompt...',
+            description='Quick Edit System Prompt:',
+            disabled=False,
+            layout=widgets.Layout(width='95%', height='200px')
+        )
+        
+        quick_edit_tab.children = [
+            widgets.HTML('<div class="section-header">Quick Edit Settings (Ctrl+Shift+A)</div>'),
+            widgets.HTML('<div class="key-status">These settings control how selected text is processed when using Ctrl+Shift+A.</div>'),
+            quick_edit_model_dropdown,
+            widgets.HTML('<div class="key-status">Select the model to use for quick text processing.</div>'),
+            quick_edit_system_prompt,
+            widgets.HTML('<div class="key-status">Customize how the AI processes your selected text.</div>')
+        ]
+        
+        # Update tab names
+        tab.children = [api_keys_tab, model_tab, system_prompt_tab, quick_edit_tab]
         tab.set_title(0, "API Keys")
         tab.set_title(1, "Model")
         tab.set_title(2, "System Prompt")
+        tab.set_title(3, "Quick Edit")
         
         display(tab)
         
@@ -1014,6 +1038,10 @@ def setup_jupyter_whisper(force_display=False):
                 # Save system prompt
                 config_manager.set_system_prompt(system_prompt.value)
                 
+                # Save quick edit settings
+                config_manager.set_config_value('QUICK_EDIT_MODEL', quick_edit_model_dropdown.value)
+                config_manager.set_config_value('QUICK_EDIT_SYSTEM_PROMPT', quick_edit_system_prompt.value)
+                
                 # Save popup preference
                 config_manager.set_config_value('SKIP_SETUP_POPUP', skip_setup_checkbox.value)
                 
@@ -1034,10 +1062,33 @@ def setup_jupyter_whisper(force_display=False):
                 
                 print("\n✅ Model and system prompt updated!")
                 print("\n🔄 Configuration saved successfully!")
+            c = initialize_chat()
         
         save_button.on_click(on_save_clicked)
         display(save_button)
         
+        # Add a button to reset system prompts to default
+        reset_prompts_button = widgets.Button(
+            description='Reset to Default Prompts',
+            button_style='warning',
+            icon='refresh'
+        )
+
+        def on_reset_prompts_clicked(b):
+            with status_output:
+                clear_output()
+                # Reset system prompts to default
+                default_system_prompt = config_manager.DEFAULT_CONFIG['system_prompt']
+                default_quick_edit_prompt = config_manager.DEFAULT_CONFIG['preferences']['QUICK_EDIT_SYSTEM_PROMPT']
+                
+                system_prompt.value = default_system_prompt
+                quick_edit_system_prompt.value = default_quick_edit_prompt
+                
+                print("System prompts have been reset to default values.")
+
+        reset_prompts_button.on_click(on_reset_prompts_clicked)
+        display(reset_prompts_button)
+
     except ImportError:
         print("Please install ipywidgets: pip install ipywidgets")
     except Exception as e:
@@ -1046,3 +1097,42 @@ def setup_jupyter_whisper(force_display=False):
 
 # Call setup on import if needed
 setup_jupyter_whisper()
+
+def initialize_chat():
+    """Initialize chat based on configured provider"""
+    global c, Chat  # Declare c as global
+    config_manager = get_config_manager()
+    provider = config_manager.get_model_provider()
+    model = config_manager.get_model()
+
+    try:
+        if provider == "anthropic":
+            from claudette import Chat
+        elif provider == "openai":
+            from cosette import Chat
+        elif provider == "xai":
+            # XAI-specific imports
+            raise NotImplementedError("XAI provider not yet implemented")
+        elif provider == "llama":
+            # Llama-specific imports
+            raise NotImplementedError("Llama provider not yet implemented")
+        else:
+            raise ValueError(f"Unknown provider: {provider}")
+
+        c = Chat(model, sp=config_manager.get_system_prompt())
+        get_ipython().user_ns['c'] = c
+        return c
+
+    except ImportError as e:
+        print(f"Failed to import chat module for provider '{provider}': {e}")
+        print("Please ensure you have installed the required package.")
+        return None
+    except Exception as e:
+        print(f"Error initializing chat for provider '{provider}': {e}")
+        return None
+
+# Initialize global variable
+c = None
+
+# Initialize chat when module is loaded
+c = initialize_chat()
