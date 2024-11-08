@@ -46,7 +46,6 @@ ehthumbs.db
 Thumbs.db
 
 # Sensitive data
-config.py
 *.env
 .env
 jupyterchat_library_analysis.txt

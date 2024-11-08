@@ -817,7 +817,6 @@ start_server_if_needed()
 inject_js()
 
 def setup_jupyter_whisper(force_display=False):
-    """Interactive setup for Jupyter Whisper"""
     try:
         import ipywidgets as widgets
         from IPython.display import display, HTML, clear_output
@@ -828,6 +827,29 @@ def setup_jupyter_whisper(force_display=False):
         if not force_display and config_manager.get_config_value('SKIP_SETUP_POPUP', False):
             return
 
+        # Create status output and buttons first
+        status_output = widgets.Output()
+        save_button = widgets.Button(
+            description='Save Configuration',
+            button_style='primary',
+            icon='check'
+        )
+        reset_prompts_button = widgets.Button(
+            description='Reset to Default Prompts',
+            button_style='warning',
+            icon='refresh'
+        )
+        skip_setup_checkbox = widgets.Checkbox(
+            value=config_manager.get_config_value('SKIP_SETUP_POPUP', False),
+            description='Don\'t show this setup popup on startup',
+            indent=False,
+            layout=widgets.Layout(margin='20px 0')
+        )
+
+        # Add collapsible container
+        accordion = widgets.Accordion()
+        main_container = widgets.VBox()
+        
         # Style for the UI
         display(HTML("""
         <style>
@@ -852,18 +874,24 @@ def setup_jupyter_whisper(force_display=False):
                 background: #e0e0e0;
                 border-radius: 4px;
             }
+            .profile-button {
+                margin: 2px;
+                min-width: 120px;
+            }
+            .active-profile {
+                background-color: #007bff;
+                color: white;
+            }
         </style>
         """))
-        
-        display(HTML('<div class="setup-header">🔧 Jupyter Whisper Setup</div>'))
-        
+
         # Create tabs for different settings
         tab = widgets.Tab()
         api_keys_tab = widgets.VBox()
         model_tab = widgets.VBox()
         system_prompt_tab = widgets.VBox()
         quick_edit_tab = widgets.VBox()
-        
+
         # API Keys Section
         keys = {
             'OPENAI_API_KEY': {
@@ -949,8 +977,12 @@ def setup_jupyter_whisper(force_display=False):
             placeholder='Enter system prompt...',
             description='System Prompt:',
             disabled=False,
-            layout=widgets.Layout(width='95%', height='400px')
+            layout=widgets.Layout(width='95%', height='400px'),
+            continuous_update=True  # Enable continuous updates
         )
+        
+        # Add keyboard handler for system prompt
+        system_prompt._dom_classes = system_prompt._dom_classes + ('jp-mod-accept-enter',)
         
         system_prompt_tab.children = [
             widgets.HTML('<div class="section-header">System Prompt</div>'),
@@ -979,8 +1011,12 @@ def setup_jupyter_whisper(force_display=False):
             placeholder='Enter Quick Edit system prompt...',
             description='Quick Edit System Prompt:',
             disabled=False,
-            layout=widgets.Layout(width='95%', height='200px')
+            layout=widgets.Layout(width='95%', height='200px'),
+            continuous_update=True  # Enable continuous updates
         )
+        
+        # Add keyboard handler for quick edit prompt
+        quick_edit_system_prompt._dom_classes = quick_edit_system_prompt._dom_classes + ('jp-mod-accept-enter',)
         
         quick_edit_tab.children = [
             widgets.HTML('<div class="section-header">Quick Edit Settings (Ctrl+Shift+A)</div>'),
@@ -991,6 +1027,148 @@ def setup_jupyter_whisper(force_display=False):
             widgets.HTML('<div class="key-status">Customize how the AI processes your selected text.</div>')
         ]
         
+        # Quick Edit Profiles Section
+        profiles = config_manager.get_quick_edit_profiles()
+        active_profile = config_manager.get_active_quick_edit_profile()
+
+        # Profile selection buttons container
+        profile_buttons_container = widgets.HBox(
+            layout=widgets.Layout(flex_wrap='wrap', margin='10px 0')
+        )
+
+        # Create a button for each profile
+        profile_buttons = {}
+        for profile_id, profile in profiles.items():
+            btn = widgets.Button(
+                description=profile['name'],
+                layout=widgets.Layout(margin='2px'),
+                button_style='info' if profile_id == active_profile else ''
+            )
+            btn._profile_id = profile_id  # Store profile ID
+            profile_buttons[profile_id] = btn
+            
+        profile_buttons_container.children = list(profile_buttons.values())
+
+        # Profile management buttons
+        add_profile_button = widgets.Button(
+            description='Add Profile',
+            icon='plus',
+            button_style='success',
+            layout=widgets.Layout(margin='5px')
+        )
+
+        delete_profile_button = widgets.Button(
+            description='Delete Profile',
+            icon='trash',
+            button_style='danger',
+            layout=widgets.Layout(margin='5px')
+        )
+
+        # Profile editing widgets
+        profile_name_input = widgets.Text(
+            description='Profile Name:',
+            layout=widgets.Layout(width='50%')
+        )
+
+        quick_edit_model_dropdown = widgets.Dropdown(
+            options=[(f"{model}", model) for model in config_manager.get_available_models()],
+            value=profiles[active_profile]['model'],
+            description='Model:',
+            style={'description_width': 'initial'},
+            layout=widgets.Layout(width='50%')
+        )
+
+        quick_edit_system_prompt = widgets.Textarea(
+            value=profiles[active_profile]['system_prompt'],
+            placeholder='Enter Quick Edit system prompt...',
+            description='System Prompt:',
+            disabled=False,
+            layout=widgets.Layout(width='95%', height='200px')
+        )
+
+        def update_profile_ui(profile_id):
+            """Update UI to reflect selected profile"""
+            profile = profiles[profile_id]
+            profile_name_input.value = profile['name']
+            quick_edit_model_dropdown.value = profile['model']
+            quick_edit_system_prompt.value = profile['system_prompt']
+            
+            # Update button styles
+            for btn in profile_buttons.values():
+                btn.button_style = 'info' if btn._profile_id == profile_id else ''
+
+        def on_profile_button_clicked(b):
+            """Handle profile button clicks"""
+            profile_id = b._profile_id
+            config_manager.set_active_quick_edit_profile(profile_id)
+            profiles.update(config_manager.get_quick_edit_profiles())  # Refresh profiles data
+            update_profile_ui(profile_id)
+
+        def on_add_profile_clicked(b):
+            """Handle adding new profile"""
+            new_id = f"profile_{len(profiles)}"
+            new_name = f"New Profile {len(profiles)}"
+            config_manager.add_quick_edit_profile(
+                new_id,
+                new_name,
+                quick_edit_model_dropdown.value,
+                "Enter system prompt here..."
+            )
+            # Refresh UI
+            profiles.update(config_manager.get_quick_edit_profiles())
+            update_profile_buttons()
+            # Set the new profile as active
+            config_manager.set_active_quick_edit_profile(new_id)
+            update_profile_ui(new_id)
+
+        def on_delete_profile_clicked(b):
+            """Handle deleting current profile"""
+            current_profile = config_manager.get_active_quick_edit_profile()
+            if current_profile != 'default':
+                try:
+                    config_manager.remove_quick_edit_profile(current_profile)
+                    profiles.update(config_manager.get_quick_edit_profiles())
+                    update_profile_buttons()
+                    # Switch to default profile
+                    config_manager.set_active_quick_edit_profile('default')
+                    update_profile_ui('default')
+                except Exception as e:
+                    with status_output:
+                        clear_output()
+                        print(f"Error deleting profile: {str(e)}")
+
+        def update_profile_buttons():
+            """Refresh profile buttons"""
+            profile_buttons.clear()
+            for profile_id, profile in profiles.items():
+                btn = widgets.Button(
+                    description=profile['name'],
+                    layout=widgets.Layout(margin='2px'),
+                    button_style='info' if profile_id == active_profile else ''
+                )
+                btn._profile_id = profile_id
+                btn.on_click(on_profile_button_clicked)
+                profile_buttons[profile_id] = btn
+            profile_buttons_container.children = list(profile_buttons.values())
+                # Bind button events
+        add_profile_button.on_click(on_add_profile_clicked)
+        delete_profile_button.on_click(on_delete_profile_clicked)
+        
+        # Initial button setup
+        update_profile_buttons()
+
+        # Assemble Quick Edit tab
+        quick_edit_tab.children = [
+            widgets.HTML('<div class="section-header">Quick Edit Profiles</div>'),
+            profile_buttons_container,
+            widgets.HBox([add_profile_button, delete_profile_button]),
+            widgets.HTML('<div class="section-header">Profile Settings</div>'),
+            profile_name_input,
+            quick_edit_model_dropdown,
+            quick_edit_system_prompt,
+            widgets.HTML('<div class="key-status">Configure how the AI processes your selected text when using Ctrl+Shift+A.</div>')
+        ]
+
         # Update tab names
         tab.children = [api_keys_tab, model_tab, system_prompt_tab, quick_edit_tab]
         tab.set_title(0, "API Keys")
@@ -998,88 +1176,70 @@ def setup_jupyter_whisper(force_display=False):
         tab.set_title(2, "System Prompt")
         tab.set_title(3, "Quick Edit")
         
-        display(tab)
+        # Create the main container with all widgets
+        main_container.children = [
+            tab,
+            skip_setup_checkbox,
+            status_output,
+            widgets.HBox([save_button, reset_prompts_button])
+        ]
         
-        # Add checkbox for popup preference
-        skip_setup_checkbox = widgets.Checkbox(
-            value=config_manager.get_config_value('SKIP_SETUP_POPUP', False),
-            description='Don\'t show this setup popup on startup',
-            indent=False,
-            layout=widgets.Layout(margin='20px 0')
-        )
+        # Add the main container to the accordion
+        accordion.children = [main_container]
+        accordion.set_title(0, '🔧 Jupyter Whisper Setup')
+        accordion.selected_index = 0  # Open by default
         
-        display(skip_setup_checkbox)
-        
-        status_output = widgets.Output()
-        display(status_output)
-        
-        save_button = widgets.Button(
-            description='Save Configuration',
-            button_style='primary',
-            icon='check'
-        )
+        # Display the accordion (which contains all other widgets)
+        display(accordion)
         
         def on_save_clicked(b):
             global c, model  # Access global variables
             with status_output:
                 clear_output()
-                
-                # Save API keys
-                for key_name, key_info in keys.items():
-                    widget = key_info['widget']
-                    value = widget.value.strip()
-                    if value and key_info['validate'](value):
-                        config_manager.set_api_key(key_name, value)
-                
-                # Save model selection
-                new_model = model_dropdown.value
-                config_manager.set_model(new_model)
-                
-                # Save system prompt
-                config_manager.set_system_prompt(system_prompt.value)
-                
-                # Save quick edit settings
-                config_manager.set_config_value('QUICK_EDIT_MODEL', quick_edit_model_dropdown.value)
-                config_manager.set_config_value('QUICK_EDIT_SYSTEM_PROMPT', quick_edit_system_prompt.value)
-                
-                # Save popup preference
-                config_manager.set_config_value('SKIP_SETUP_POPUP', skip_setup_checkbox.value)
-                
-                # Reinitialize chat with new settings
-                model = new_model
-                c = Chat(model, sp=system_prompt.value)
-                get_ipython().user_ns['c'] = c
-                
-                # Check for missing keys
-                missing_keys = config_manager.ensure_api_keys()
-                if missing_keys:
-                    print("\n⚠️ Warning: The following keys are still missing:")
-                    for key in missing_keys:
-                        print(f"- {key}")
-                    print("\nSome features may be limited.")
-                else:
-                    print("\n✅ All required API keys are configured!")
-                
-                print("\n✅ Model and system prompt updated!")
-                print("\n🔄 Configuration saved successfully!")
+                try:
+                    # Save API keys
+                    for key_name, key_info in keys.items():
+                        widget = key_info['widget']
+                        value = widget.value.strip()
+                        if value and key_info['validate'](value):
+                            config_manager.set_api_key(key_name, value)
+                        
+                    # Save model selection
+                    new_model = model_dropdown.value
+                    config_manager.set_model(new_model)
+                    
+                    # Save system prompt
+                    config_manager.set_system_prompt(system_prompt.value)
+                    
+                    # Save current profile changes
+                    current_profile = config_manager.get_active_quick_edit_profile()
+                    config_manager.add_quick_edit_profile(
+                        current_profile,
+                        profile_name_input.value,
+                        quick_edit_model_dropdown.value,
+                        quick_edit_system_prompt.value
+                    )
+                    
+                    # Save popup preference
+                    config_manager.set_config_value('SKIP_SETUP_POPUP', skip_setup_checkbox.value)
+                    
+                    # Update UI
+                    update_profile_buttons()
+                    
+                    print("\n✅ Configuration saved successfully!")
+                    print("\n✅ Quick Edit profiles updated!")
+                except Exception as e:
+                    print(f"\n❌ Error saving configuration: {str(e)}")            
             c = initialize_chat()
-        
         save_button.on_click(on_save_clicked)
-        display(save_button)
         
-        # Add a button to reset system prompts to default
-        reset_prompts_button = widgets.Button(
-            description='Reset to Default Prompts',
-            button_style='warning',
-            icon='refresh'
-        )
-
         def on_reset_prompts_clicked(b):
             with status_output:
                 clear_output()
                 # Reset system prompts to default
                 default_system_prompt = config_manager.DEFAULT_CONFIG['system_prompt']
-                default_quick_edit_prompt = config_manager.DEFAULT_CONFIG['preferences']['QUICK_EDIT_SYSTEM_PROMPT']
+                # Get default quick edit prompt from default profile
+                default_quick_edit_prompt = config_manager.DEFAULT_CONFIG['preferences']['QUICK_EDIT_PROFILES']['default']['system_prompt']
                 
                 system_prompt.value = default_system_prompt
                 quick_edit_system_prompt.value = default_quick_edit_prompt
@@ -1087,7 +1247,6 @@ def setup_jupyter_whisper(force_display=False):
                 print("System prompts have been reset to default values.")
 
         reset_prompts_button.on_click(on_reset_prompts_clicked)
-        display(reset_prompts_button)
 
     except ImportError:
         print("Please install ipywidgets: pip install ipywidgets")
