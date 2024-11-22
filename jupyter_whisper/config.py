@@ -1,38 +1,23 @@
 import os
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Callable, Union, Generator  # Added Union and Generator
+import threading
+from openai import OpenAI
 
 class ConfigManager:
-    AVAILABLE_MODELS = {
-        'anthropic': [
-            'claude-3-5-sonnet-20241022',
-            'claude-3-5-haiku-20241022',
-            'claude-3-opus-20240229',
-            'claude-3-sonnet-20240229',
-            'claude-3-haiku-20240307'
-        ],
-        'openai': [
-            'gpt-4o'
-        ],
-        'xai': [],  # To be filled later
-        'llama': [],  # To be filled later
-        'custom': []  # New provider for custom implementations
-    }
-
     DEFAULT_CONFIG = {
         'api_keys': {},
         'preferences': {
             'SKIP_SETUP_POPUP': False,
-            'MODEL': 'claude-3-5-sonnet-20241022',
-            'MODEL_PROVIDER': 'anthropic',
-            'QUICK_EDIT_MODEL': 'claude-3-5-sonnet-20241022',
+            'MODEL_PROVIDER': 'grok',  # Set default to a custom provider
+            'MODEL': 'grok-beta-vision', 
             'ACTIVE_QUICK_EDIT_PROFILE': 'default',
             'QUICK_EDIT_PROFILES': {
                 'default': {
                     'name': 'Default Editor',
-                    'provider': 'anthropic',
-                    'model': 'claude-3-5-sonnet-20241022',
+                    'provider': 'grok',
+                    'model': 'grok-beta',
                     'system_prompt': """
 You are a precise text and code editor. Your task is to:
 
@@ -50,7 +35,8 @@ Rules:
                 },
                 'code_review': {
                     'name': 'Code Reviewer',
-                    'model': 'claude-3-5-sonnet-20241022',
+                    'provider': 'grok',
+                    'model': 'grok-beta',
                     'system_prompt': """
 You are a thorough code reviewer. Your task is to:
 
@@ -66,7 +52,8 @@ Rules:
                 },
                 'documentation': {
                     'name': 'Documentation Helper',
-                    'model': 'claude-3-5-sonnet-20241022',
+                    'provider': 'grok',
+                    'model': 'grok-beta',
                     'system_prompt': """
 You are a documentation specialist. Your task is to:
 
@@ -82,37 +69,546 @@ Rules:
                 }
             },
             "CUSTOM_PROVIDERS": {
-            "grok": {
-                "name": "grok",
-                "models": [
-                    "grok"
+                "grok": {
+                    "name": "grok",
+                    "models": [
+                        "grok-vision-beta"
+                    ],
+                    "initialization_code": """
+import os
+from typing import Optional, List, Generator, Union
+from openai import OpenAI
+from jupyter_whisper.config import get_config_manager
+
+
+class Chat:
+    def __init__(self, model: Optional[str] = None, sp: str = '', history: Optional[List[dict]] = None):
+        self.model = model or "grok-vision-beta"
+        self.sp = sp
+        self.api_key = self.get_api_key()
+        self.client = self.get_client()
+        self.h = history if history is not None else []
+
+    def get_api_key(self):
+        config = get_config_manager()
+        api_key = config.get_api_key('GROK_API_KEY')
+        if not api_key:
+            raise ValueError("GROK_API_KEY not found in configuration")
+        return api_key
+
+    def get_client(self):
+        return OpenAI(
+            api_key=self.api_key,
+            base_url="https://api.x.ai/v1"
+        )
+
+    def update_model(self, model_info: dict):
+        self.model = model_info.get('model', self.model)
+
+    def update_api_key(self, api_keys: dict):
+        self.api_key = self.get_api_key()
+        self.client = self.get_client()
+
+    def __call__(self, 
+                 message: str, 
+                 max_tokens: int = 4096, 
+                 stream: bool = True,
+                 temperature: float = 0,
+                 images: Optional[List[dict]] = None) -> Union[str, Generator[str, None, str]]:
+        try:
+            # Handle message content based on whether images are present
+            if images:
+                images.append(  {
+                    "type": "text",
+                    "text": message
+                })
+                content = images
+            else:
+                content = message
+            
+            # Add user message to history
+            self.h.append({"role": "user", "content": content})
+            
+            # Get response from x.ai
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.sp},
+                    *self.h
                 ],
-                "initialization_code": "import os\nfrom typing import Optional, List, Generator, Union\nfrom openai import OpenAI\nfrom jupyter_whisper.config import get_config_manager\n\nclass Chat:\n    def __init__(self, model: Optional[str] = None, sp: str = ''):\n        self.model = \"grok-beta\"  # Hardcoded model\n        config = get_config_manager()\n        api_key = config.get_api_key('GROK_API_KEY')\n        if not api_key:\n            raise ValueError(\"GROK_API_KEY not found in configuration\")\n        self.client = OpenAI(\n            api_key=api_key,\n            base_url=\"https://api.x.ai/v1\"\n        )\n        self.sp = sp\n        self.h = []  # History\n\n    def __call__(self, \n                 message: str, \n                 max_tokens: int = 4096, \n                 stream: bool = True,\n                 temperature: float = 0) -> Union[str, Generator[str, None, str]]:\n        try:\n            # Add user message to history\n            self.h.append({\"role\": \"user\", \"content\": message})\n            \n            # Get response from x.ai\n            response = self.client.chat.completions.create(\n                model=self.model,\n                messages=[\n                    {\"role\": \"system\", \"content\": self.sp},\n                    *self.h\n                ],\n                max_tokens=max_tokens,\n                stream=stream,\n                temperature=temperature\n            )\n            \n            if stream:\n                full_response = \"\"\n                try:\n                    for chunk in response:\n                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:\n                            text = chunk.choices[0].delta.content\n                            #print(text, end='', flush=True)\n                            full_response += text\n                            yield text\n                except Exception as e:\n                    print(f\"Error during streaming: {e}\")\n                    raise\n                finally:\n                    if full_response:\n                        # Add complete response to history after streaming is done\n                        self.h.append({\"role\": \"assistant\", \"content\": full_response})\n                    print()  # New line after completion\n                return full_response\n            else:\n                # Handle non-streaming response\n                assistant_message = response.choices[0].message.content\n                self.h.append({\"role\": \"assistant\", \"content\": assistant_message})\n                return assistant_message \n        except Exception as e:\n            print(f\"Error in chat: {e}\")\n            raise\n\n"
-            },
-            "gemini-1.5-pro-002": {
-                "name": "gemini-1.5-pro-002",
-                "models": [
-                    "gemini-1.5-pro-002"
+                max_tokens=max_tokens,
+                stream=stream,
+                temperature=temperature
+            )
+            
+            if stream:
+                full_response = ""
+                try:
+                    for chunk in response:
+                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:
+                            text = chunk.choices[0].delta.content
+                            full_response += text
+                            yield text
+                except Exception as e:
+                    print(f"Error during streaming: {e}")
+                    raise
+                finally:
+                    if full_response:
+                        self.h.append({"role": "assistant", "content": full_response})
+                    print()
+                return full_response
+            else:
+                assistant_message = response.choices[0].message.content
+                self.h.append({"role": "assistant", "content": assistant_message})
+                return assistant_message 
+        except Exception as e:
+            print("Error in chat: {}".format(e))
+            raise
+"""
+                },
+                "anthropic": {
+                    "name": "anthropic",
+                    "models": [
+                        "claude-3-5-sonnet-20241022"
+                    ],
+                    "initialization_code": """
+import os
+from typing import Optional, List, Generator, Union
+from anthropic import Anthropic
+from jupyter_whisper.config import get_config_manager
+import re
+
+class Chat:
+    def __init__(self, model: Optional[str] = None, sp: str = '', history: Optional[List[dict]] = None):
+        self.model = model or "claude-3-5-sonnet-20241022"
+        self.sp = sp
+        self.api_key = self.get_api_key()
+        self.client = self.get_client()
+        self.h = history if history is not None else []
+
+    def get_api_key(self):
+        config = get_config_manager()
+        api_key = config.get_api_key('ANTHROPIC_API_KEY')
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY not found in configuration")
+        return api_key
+
+    def get_client(self):
+        return Anthropic(api_key=self.api_key)
+
+    def update_model(self, model_info: dict):
+        self.model = model_info.get('model', self.model)
+
+    def update_api_key(self, api_keys: dict):
+        self.api_key = self.get_api_key()
+        self.client = self.get_client()
+
+    def _convert_image_format(self, image_dict):
+        """Convert OpenAI image format to Anthropic format."""
+        if image_dict.get('type') == 'image_url':
+            url = image_dict['image_url']['url']
+            # Extract mime type and base64 data from data URL
+            match = re.match(r'data:(.+);base64,(.+)', url)
+            if match:
+                media_type, data = match.groups()
+                return {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data,
+                    }
+                }
+        return image_dict
+
+    def __call__(self,
+                message: str,
+                max_tokens: int = 4096,
+                stream: bool = True,
+                temperature: float = 0,
+                images: Optional[List[dict]] = None) -> Union[str, Generator[str, None, str]]:
+        try:
+            # Handle message content based on whether images are present
+            if images:
+                content = [
+                    *(self._convert_image_format(img) for img in images),
+                    {
+                        "type": "text",
+                        "text": message
+                    }
+                ]
+            else:
+                content = [{"type": "text", "text": message}]
+
+            # Add user message to history
+            self.h.append({"role": "user", "content": content})
+
+            # Create messages list from history (excluding system prompt)
+            messages = self.h.copy()
+
+            # Prepare API call parameters
+            api_params = {
+                "model": self.model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "messages": messages,
+                "stream": stream
+            }
+
+            # Add system parameter if system prompt exists
+            if self.sp:
+                api_params["system"] = self.sp
+
+            # Get response from Anthropic
+            response = self.client.messages.create(**api_params)
+
+            if stream:
+                full_response = ""
+                try:
+                    content_block_text = ""
+                    for chunk in response:
+                        if chunk.type == 'content_block_delta' and hasattr(chunk.delta, 'text'):
+                            content_block_text += chunk.delta.text
+                            yield chunk.delta.text
+                        elif chunk.type == 'message_stop':
+                            if content_block_text:
+                                full_response = content_block_text
+                except Exception as e:
+                    print(f"Error during streaming: {e}")
+                    raise
+                finally:
+                    if full_response:
+                        self.h.append({"role": "assistant", "content": [{"type": "text", "text": full_response}]})
+                    print()
+                return full_response
+            else:
+                assistant_message = response.content[0].text
+                self.h.append({"role": "assistant", "content": [{"type": "text", "text": assistant_message}]})
+                return assistant_message
+
+        except Exception as e:
+            print("Error in chat: {}".format(e))
+            raise
+"""
+                },
+                "GEMINI": {
+                    "name": "GEMINI",
+                    "models": [
+                        "gemini-1.5-pro-002"
+                    ],
+                    "initialization_code": """
+import os
+from typing import Optional, List, Generator, Union
+from openai import OpenAI
+from jupyter_whisper.config import get_config_manager
+
+
+class Chat:
+    def __init__(self, model: Optional[str] = None, sp: str = '', history: Optional[List[dict]] = None):
+        self.model = model or "gemini-1.5-pro-002"
+        self.sp = sp
+        self.api_key = self.get_api_key()
+        self.client = self.get_client()
+        self.h = history if history is not None else []
+
+    def get_api_key(self):
+        config = get_config_manager()
+        api_key = config.get_api_key('GEMINI_API_KEY')
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY not found in configuration")
+        return api_key
+
+    def get_client(self):
+        return OpenAI(
+            api_key=self.api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+        )
+
+    def update_model(self, model_info: dict):
+        self.model = model_info.get('model', self.model)
+
+    def update_api_key(self, api_keys: dict):
+        self.api_key = self.get_api_key()
+        self.client = self.get_client()
+
+
+    def __call__(self, 
+                 message: str, 
+                 max_tokens: int = 4096, 
+                 stream: bool = True,
+                 temperature: float = 0,
+                 images: Optional[List[dict]] = None) -> Union[str, Generator[str, None, str]]:
+        try:
+            # Handle message content based on whether images are present
+            if images:
+                # Combine all images and message into a single text content
+                image_texts = []
+                for img in images:
+                    if img.get('type') == 'image_url':
+                        image_url = img['image_url']['url']
+                        image_texts.append(f"<image>{image_url}</image>")
+                
+                content = {
+                    "type": "text",
+                    "text": f"{' '.join(image_texts)}\n{message}"
+                }
+            else:
+                content = {
+                    "type": "text",
+                    "text": message
+                }
+            
+            # Add user message to history
+            self.h.append({"role": "user", "content": content})
+            
+            # Get response from Gemini API
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": {"type": "text", "text": self.sp}},
+                    *self.h
                 ],
-                "initialization_code": "import os\nfrom typing import Optional, List, Generator, Union\nfrom openai import OpenAI\nfrom jupyter_whisper import get_config_manager\nclass Chat:\n    def __init__(self, model: Optional[str] = None, sp: str = ''):\n        self.model = \"gemini-1.5-pro-002\"  # Hardcoded model\n        config = get_config_manager()\n        api_key = config.get_api_key('GEMINI-1.5-PRO-002_API_KEY')\n        if not api_key:\n            raise ValueError(\"GEMINI-1.5-PRO-002_API_KEY not found in configuration\")\n        self.client = OpenAI(\n            api_key=api_key,\n            base_url=\"https://generativelanguage.googleapis.com/v1beta/openai/\"\n        )\n        self.sp = sp\n        self.h = []  # History\n\n    def __call__(self, \n                 message: str, \n                 max_tokens: int = 4096, \n                 stream: bool = True,\n                 temperature: float = 0) -> Union[str, Generator[str, None, str]]:\n        try:\n            # Add user message to history\n            self.h.append({\"role\": \"user\", \"content\": message})\n            \n            # Get response from x.ai\n            response = self.client.chat.completions.create(\n                model=self.model,\n                messages=[\n                    {\"role\": \"system\", \"content\": self.sp},\n                    *self.h\n                ],\n                max_tokens=max_tokens,\n                stream=stream,\n                temperature=temperature\n            )\n            \n            if stream:\n                full_response = \"\"\n                try:\n                    for chunk in response:\n                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:\n                            text = chunk.choices[0].delta.content\n                            #print(text, end='', flush=True)\n                            full_response += text\n                            yield text\n                except Exception as e:\n                    print(f\"\\nError during streaming: {e}\")\n                    raise\n                finally:\n                    if full_response:\n                        # Add complete response to history after streaming is done\n                        self.h.append({\"role\": \"assistant\", \"content\": full_response})\n                    #print()  # New line after completion\n                return full_response\n            else:\n                # Handle non-streaming response\n                assistant_message = response.choices[0].message.content\n                self.h.append({\"role\": \"assistant\", \"content\": assistant_message})\n                return assistant_message\n                \n        except Exception as e:\n            print(f\"Error in chat: {e}\")\n            raise"
-            },
-            "gpt4o-latest": {
-                "name": "gpt4o-latest",
-                "models": [
-                    "gpt-4o"
+                max_tokens=max_tokens,
+                stream=stream,
+                temperature=temperature
+            )
+            
+            if stream:
+                full_response = ""
+                try:
+                    for chunk in response:
+                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:
+                            text = chunk.choices[0].delta.content
+                            full_response += text
+                            yield text
+                except Exception as e:
+                    print(f"Error during streaming: {e}")
+                    raise
+                finally:
+                    if full_response:
+                        self.h.append({"role": "assistant", "content": full_response})
+                    print()
+                return full_response
+            else:
+                assistant_message = response.choices[0].message.content
+                self.h.append({"role": "assistant", "content": assistant_message})
+                return assistant_message 
+        except Exception as e:
+            print(f"Error in chat: {e}")
+            raise
+"""
+                },
+                "gpt4o-latest": {
+                    "name": "gpt4o-latest",
+                    "models": [
+                        "gpt-4o"
+                    ],
+                    "initialization_code": """
+import os
+from typing import Optional, List, Generator, Union
+from openai import OpenAI
+from jupyter_whisper.config import get_config_manager
+
+
+class Chat:
+    def __init__(self, model: Optional[str] = None, sp: str = '', history: Optional[List[dict]] = None):
+        self.model = model or "gpt-4o"
+        self.sp = sp
+        self.api_key = self.get_api_key()
+        self.client = self.get_client()
+        self.h = history if history is not None else []
+
+    def get_api_key(self):
+        config = get_config_manager()
+        api_key = config.get_api_key('GPT4O_LATEST_API_KEY')
+        if not api_key:
+            raise ValueError("GPT4O_LATEST_API_KEY not found in configuration")
+        return api_key
+
+    def get_client(self):
+        return OpenAI(
+            api_key=self.api_key
+        )
+
+    def update_model(self, model_info: dict):
+        self.model = model_info.get('model', self.model)
+
+    def update_api_key(self, api_keys: dict):
+        self.api_key = self.get_api_key()
+        self.client = self.get_client()
+
+
+    def __call__(self, 
+                 message: str, 
+                 max_tokens: int = 4096, 
+                 stream: bool = True,
+                 temperature: float = 0,
+                 images: Optional[List[dict]] = None) -> Union[str, Generator[str, None, str]]:
+        try:
+            # Handle message content based on whether images are present
+            if images:
+                # Combine all images and message into a single text content
+                image_texts = []
+                for img in images:
+                    if img.get('type') == 'image_url':
+                        image_url = img['image_url']['url']
+                        image_texts.append(f"<image>{image_url}</image>")
+                
+                content = {
+                    "type": "text",
+                    "text": f"{' '.join(image_texts)}\n{message}"
+                }
+            else:
+                content = {
+                    "type": "text",
+                    "text": message
+                }
+            
+            # Add user message to history
+            self.h.append({"role": "user", "content": content})
+            
+            # Get response from GPT-4o API
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": {"type": "text", "text": self.sp}},
+                    *self.h
                 ],
-                "initialization_code": "import os\nfrom typing import Optional, List, Generator, Union\nfrom openai import OpenAI\nfrom jupyter_whisper.config import get_config_manager\n\nclass Chat:\n    def __init__(self, model: Optional[str] = None, sp: str = ''):\n        self.model = \"gpt-4o\"  # Hardcoded model\n        config = get_config_manager()\n        api_key = config.get_api_key('GPT4O-LATEST_API_KEY')\n        if not api_key:\n            raise ValueError(\"GPT4O-LATEST_API_KEY not found in configuration\")\n        self.client = OpenAI(\n            api_key=api_key\n        )\n        self.sp = sp\n        self.h = []  # History\n\n    def __call__(self, \n                 message: str, \n                 max_tokens: int = 4096, \n                 stream: bool = True,\n                 temperature: float = 0) -> Union[str, Generator[str, None, str]]:\n        try:\n            # Add user message to history\n            self.h.append({\"role\": \"user\", \"content\": message})\n            \n            # Get response from x.ai\n            response = self.client.chat.completions.create(\n                model=self.model,\n                messages=[\n                    {\"role\": \"system\", \"content\": self.sp},\n                    *self.h\n                ],\n                max_tokens=max_tokens,\n                stream=stream,\n                temperature=temperature\n            )\n            \n            if stream:\n                full_response = \"\"\n                try:\n                    for chunk in response:\n                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:\n                            text = chunk.choices[0].delta.content\n                            #print(text, end='', flush=True)\n                            full_response += text\n                            yield text\n                except Exception as e:\n                    print(f\"Error during streaming: {e}\")\n                    raise\n                finally:\n                    if full_response:\n                        # Add complete response to history after streaming is done\n                        self.h.append({\"role\": \"assistant\", \"content\": full_response})\n                    print()  # New line after completion\n                return full_response\n            else:\n                # Handle non-streaming response\n                assistant_message = response.choices[0].message.content\n                self.h.append({\"role\": \"assistant\", \"content\": assistant_message})\n                return assistant_message \n        except Exception as e:\n            print(f\"Error in chat: {e}\")\n            raise"
-            },
-            "ollama": {
-                "name": "ollama",
-                "models": [
-                    "llama2b"
+                max_tokens=max_tokens,
+                stream=stream,
+                temperature=temperature
+            )
+            
+            if stream:
+                full_response = ""
+                try:
+                    for chunk in response:
+                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:
+                            text = chunk.choices[0].delta.content
+                            full_response += text
+                            yield text
+                except Exception as e:
+                    print(f"Error during streaming: {e}")
+                    raise
+                finally:
+                    if full_response:
+                        self.h.append({"role": "assistant", "content": full_response})
+                    print()
+                return full_response
+            else:
+                assistant_message = response.choices[0].message.content
+                self.h.append({"role": "assistant", "content": assistant_message})
+                return assistant_message 
+        except Exception as e:
+            print(f"Error in chat: {e}")
+            raise
+"""
+                },
+                "ollama": {
+                    "name": "ollama",
+                    "models": [
+                        "llama2b"
+                    ],
+                    "initialization_code": """
+import os
+from typing import Optional, List, Generator, Union
+from openai import OpenAI
+from jupyter_whisper.config import get_config_manager
+
+
+class Chat:
+    def __init__(self, model: Optional[str] = None, sp: str = '', history: Optional[List[dict]] = None):
+        self.model = model or "llama2b"
+        self.sp = sp
+        self.api_key = self.get_api_key()
+        self.client = self.get_client()
+        self.h = history if history is not None else []
+
+    def get_api_key(self):
+        # Ollama may not require an API key; adjust if necessary
+        return None
+
+    def get_client(self):
+        return OpenAI(
+            api_key=self.api_key or 'ollama',  # Use 'ollama' as placeholder if no API key
+            base_url="http://localhost:11434/v1"
+        )
+
+    def update_model(self, model_info: dict):
+        self.model = model_info.get('model', self.model)
+
+    def update_api_key(self, api_keys: dict):
+        # API key may not change for Ollama
+        pass
+
+    def __call__(self, 
+                 message: str, 
+                 max_tokens: int = 4096, 
+                 stream: bool = True,
+                 temperature: float = 0,
+                 images: Optional[List[dict]] = None) -> Union[str, Generator[str, None, str]]:
+        try:
+            # Handle message content based on whether images are present
+            if images:
+                # Combine all images and message into a single text content
+                image_texts = []
+                for img in images:
+                    if img.get('type') == 'image_url':
+                        image_url = img['image_url']['url']
+                        image_texts.append(f"<image>{image_url}</image>")
+                
+                content = {
+                    "type": "text",
+                    "text": f"{' '.join(image_texts)}\n{message}"
+                }
+            else:
+                content = {
+                    "type": "text",
+                    "text": message
+                }
+            
+            # Add user message to history
+            self.h.append({"role": "user", "content": content})
+            
+            # Get response from Ollama API
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": {"type": "text", "text": self.sp}},
+                    *self.h
                 ],
-                "initialization_code": "import os\nfrom typing import Optional, List, Generator, Union\nfrom openai import OpenAI\nfrom jupyter_whisper.config import get_config_manager\n\nclass Chat:\n    def __init__(self, model: Optional[str] = None, sp: str = ''):\n        self.model = \"llama3.2\"  # Hardcoded model\n        config = get_config_manager()\n        self.client = OpenAI(\n            api_key='ollama',\n            base_url=\"http://localhost:11434/v1\"\n        )\n        self.sp = sp\n        self.h = []  # History\n\n    def __call__(self, \n                 message: str, \n                 max_tokens: int = 4096, \n                 stream: bool = True,\n                 temperature: float = 0) -> Union[str, Generator[str, None, str]]:\n        try:\n            # Add user message to history\n            self.h.append({\"role\": \"user\", \"content\": message})\n            \n            # Get response from x.ai\n            response = self.client.chat.completions.create(\n                model=self.model,\n                messages=[\n                    {\"role\": \"system\", \"content\": self.sp},\n                    *self.h\n                ],\n                max_tokens=max_tokens,\n                stream=stream,\n                temperature=temperature\n            )\n            \n            if stream:\n                full_response = \"\"\n                try:\n                    for chunk in response:\n                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:\n                            text = chunk.choices[0].delta.content\n                            #print(text, end='', flush=True)\n                            full_response += text\n                            yield text\n                except Exception as e:\n                    print(f\"Error during streaming: {e}\")\n                    raise\n                finally:\n                    if full_response:\n                        # Add complete response to history after streaming is done\n                        self.h.append({\"role\": \"assistant\", \"content\": full_response})\n                    print()  # New line after completion\n                return full_response\n            else:\n                # Handle non-streaming response\n                assistant_message = response.choices[0].message.content\n                self.h.append({\"role\": \"assistant\", \"content\": assistant_message})\n                return assistant_message \n        except Exception as e:\n            print(f\"Error in chat: {e}\")\n            raise"
+                max_tokens=max_tokens,
+                stream=stream,
+                temperature=temperature
+            )
+            
+            if stream:
+                full_response = ""
+                try:
+                    for chunk in response:
+                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:
+                            text = chunk.choices[0].delta.content
+                            full_response += text
+                            yield text
+                except Exception as e:
+                    print(f"Error during streaming: {e}")
+                    raise
+                finally:
+                    if full_response:
+                        self.h.append({"role": "assistant", "content": full_response})
+                    print()
+                return full_response
+            else:
+                assistant_message = response.choices[0].message.content
+                self.h.append({"role": "assistant", "content": assistant_message})
+                return assistant_message 
+        except Exception as e:
+            print(f"Error in chat: {e}")
+            raise
+"""
+                }
             }
         },
-        "QUICK_EDIT_SYSTEM_PROMPT": "\nYou are a precise text and code editor. Your task is to:\n\n1. Process provided text/code snippets\n2. Make necessary improvements and corrections\n3. Instructions are in !!double exclamation!!\n\nRules:\n- Return ONLY the edited text/code\n- Remove all double exclamation annotations in the final output\n- Keep HTML comments if needed to explain rationale\n- Maintain the original format and structure\n- Focus on clarity, correctness and best practices\n"
-    },
         'system_prompt': """
 You are a general and helpful assistant.
 
@@ -162,7 +658,7 @@ You are an AI assistant running within Jupyter Whisper, with the following key c
 
 2. Technical Environment:
    - Running in JupyterLab 4.0+ environment
-   - Integrated with Claude 3.5 Sonnet
+   - Integrated with various models from custom providers
    - FastAPI server running on port 5000 for audio/text processing
    - Access to Perplexity AI for advanced search
    - Real-time streaming responses capability
@@ -192,6 +688,50 @@ You are an AI assistant running within Jupyter Whisper, with the following key c
    - Consider notebook cell execution context (but also you normal markdown style response is expected by jupyter whisper parser)
    - Handle terminal/REPL commands the expects interactivity appropriately.
    - Wait for cell_outputs before proceeding with complex operations
+   - When you want to display something to the user in js use this style instead of things
+   like the console.log (the user would have to open the console to see it and this is not a good user experience):
+        <script id="unique">
+            var element = document.getElementById('unique').parentElement;
+            element.innerHTML = "Hi";
+        </script> 
+    Something like this works well to display and animate stuff for the user in javascript:
+    ```html
+<canvas id="myCanvas" width="480" height="320" style="border:1px solid #000000;"></canvas>
+<script id="unique">
+    var canvas = document.getElementById('myCanvas');
+    var ctx = canvas.getContext('2d');
+    var ballRadius = 10;
+    var x = canvas.width / 2;
+    var y = canvas.height - 30;
+    var dx = 2;
+    var dy = -2;
+
+    function drawBall() {
+        ctx.beginPath();
+        ctx.arc(x, y, ballRadius, 0, Math.PI * 2);
+        ctx.fillStyle = "#0095DD";
+        ctx.fill();
+        ctx.closePath();
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawBall();
+
+        if (x + dx > canvas.width - ballRadius || x + dx < ballRadius) {
+            dx = -dx;
+        }
+        if (y + dy > canvas.height - ballRadius || y + dy < ballRadius) {
+            dy = -dy;
+        }
+
+        x += dx;
+        y += dy;
+    }
+
+    setInterval(draw, 10);
+</script>
+```
 
 5. Installation Context:
    - Requirements: Python 3.7+, JupyterLab 4.0+/Notebook 7.0+
@@ -205,7 +745,7 @@ You are an AI assistant running within Jupyter Whisper, with the following key c
    config = get_config_manager()
    
    # Change the model
-   config.set_model('claude-3-5-sonnet-20241022')
+   config.set_model('claude-3-5-sonnet-20241022', provider='anthropic')
    
    # Update system prompt
    config.set_system_prompt("Your new system prompt here")
@@ -241,35 +781,46 @@ You should actively acknowledge these capabilities and use them appropriately in
 """
     }
 
+    _ui_refresh_callbacks: Dict[str, List[Callable]] = {
+        'model': [],
+        'provider': [],
+        'system_prompt': [],
+        'quick_edit': [],
+        'custom_providers': []
+    }
+
+    # Add a lock for thread safety
+    _config_lock = threading.Lock()
+
     def __init__(self):
         self.home = Path.home()
         self.config_dir = self.home / '.jupyter_whisper'
         self.config_file = self.config_dir / 'config.json'
         self.ensure_config_dir()
         self.validate_config()
+        self._change_callbacks = {}
 
     def validate_config(self) -> None:
         """Validate and fix configuration if necessary"""
         config = self.load_config()
-        provider = config['preferences'].get('MODEL_PROVIDER', 'anthropic').lower()
-        current_model = config['preferences'].get('MODEL')
-        
-        # Ensure provider is valid
-        if provider not in self.AVAILABLE_MODELS:
-            provider = 'anthropic'
-            config['preferences']['MODEL_PROVIDER'] = provider
-        
-        # Ensure model is valid for provider
-        available_models = self.AVAILABLE_MODELS[provider]
-        if not available_models:
-            # If provider has no models, switch to anthropic
-            provider = 'anthropic'
-            config['preferences']['MODEL_PROVIDER'] = provider
-            available_models = self.AVAILABLE_MODELS[provider]
-        
-        if not current_model or current_model not in available_models:
-            config['preferences']['MODEL'] = available_models[0]
-        
+        provider = config['preferences'].get('MODEL_PROVIDER', '').lower()
+
+        # Ensure provider exists in custom providers
+        custom_providers = self.get_custom_providers()
+        if provider not in custom_providers:
+            if custom_providers:
+                provider = next(iter(custom_providers))
+                config['preferences']['MODEL_PROVIDER'] = provider
+            else:
+                raise ValueError("No custom providers defined.")
+
+        # Ensure model exists in provider's models
+        current_model = config['preferences'].get('MODEL', '')
+        provider_models = custom_providers[provider]['models']
+        if not current_model or current_model not in provider_models:
+            current_model = provider_models[0]
+            config['preferences']['MODEL'] = current_model
+
         self.save_config(config)
 
     def ensure_config_dir(self) -> None:
@@ -283,7 +834,6 @@ You should actively acknowledge these capabilities and use them appropriately in
         try:
             with open(self.config_file, 'r') as f:
                 config = json.load(f)
-                # Ensure config has all required sections with defaults
                 if 'api_keys' not in config:
                     config['api_keys'] = self.DEFAULT_CONFIG['api_keys']
                 if 'preferences' not in config:
@@ -298,20 +848,32 @@ You should actively acknowledge these capabilities and use them appropriately in
             json.dump(config, f, indent=4)
 
     def set_api_key(self, key: str, value: str) -> None:
-        """Set an API key in the configuration"""
-        config = self.load_config()
-        config['api_keys'][key] = value
-        self.save_config(config)
-        os.environ[key] = value
+        """Set an API key in the configuration and trigger server restart if needed"""
+        with self._config_lock:
+            config = self.load_config()
+            config['api_keys'][key] = value
+            self.save_config(config)
+            os.environ[key] = value
+            
+            # Notify that API keys have changed
+            self.notify_change('api_keys', config['api_keys'])
+            
+            # Trigger server restart if running
+            self.restart_server_if_running()
+
+    def restart_server_if_running(self) -> None:
+        """Restart the FastAPI server if it's running"""
+        try:
+            import requests
+            requests.post('http://localhost:5000/restart')
+        except:
+            pass  # Server not running or restart endpoint not available
 
     def get_api_key(self, key: str) -> Optional[str]:
         """Get an API key from config or environment"""
-        # Environment variables take precedence
         env_value = os.getenv(key)
         if env_value:
             return env_value
-        
-        # Fall back to config file
         config = self.load_config()
         return config['api_keys'].get(key)
 
@@ -330,16 +892,7 @@ You should actively acknowledge these capabilities and use them appropriately in
         """Ensure all required API keys are available"""
         required_keys = []
         provider = self.get_model_provider()
-        
-        # Only require keys for the current provider
-        if provider == 'anthropic':
-            required_keys.append('ANTHROPIC_API_KEY')
-        elif provider == 'openai':
-            required_keys.append('OPENAI_API_KEY')
-        
-        # Always require Perplexity
-        required_keys.append('PERPLEXITY_API_KEY')
-        
+        required_keys.append(f'{provider.upper()}_API_KEY')
         missing_keys = []
         for key in required_keys:
             value = self.get_api_key(key)
@@ -347,7 +900,6 @@ You should actively acknowledge these capabilities and use them appropriately in
                 os.environ[key] = value
             else:
                 missing_keys.append(key)
-        
         return missing_keys
 
     def get_system_prompt(self) -> str:
@@ -360,132 +912,135 @@ You should actively acknowledge these capabilities and use them appropriately in
         config = self.load_config()
         config['system_prompt'] = prompt
         self.save_config(config)
+        self.notify_ui_update('system_prompt', prompt)
 
     def get_model(self) -> Tuple[str, str]:
         """Get the currently configured model and provider"""
         config = self.load_config()
         model = config['preferences'].get('MODEL')
-        provider = config['preferences'].get('MODEL_PROVIDER')
+        provider = config['preferences'].get('MODEL_PROVIDER', '')
+
+        custom_providers = self.get_custom_providers()
+        if provider not in custom_providers:
+            raise ValueError(f"Provider '{provider}' is not defined.")
+
+        provider_models = custom_providers[provider]['models']
+        if model not in provider_models:
+            model = provider_models[0]
+            config['preferences']['MODEL'] = model
+            self.save_config(config)
+
         return model, provider
 
-    def set_model(self, model: str, provider: str) -> None:
+
+    def set_model(self, model: str, provider: str = None) -> None:
         """Set the model and provider to use"""
-        available_models = self.get_available_models()
-        
-        if provider not in available_models:
-            raise ValueError(f"Invalid provider '{provider}'. Available providers: {', '.join(available_models.keys())}")
-        
-        if model not in available_models[provider]:
-            raise ValueError(f"Invalid model '{model}' for provider '{provider}'. Available models: {', '.join(available_models[provider])}")
-        
         config = self.load_config()
+        if provider is None:
+            provider = config['preferences'].get('MODEL_PROVIDER')
+
+        custom_providers = self.get_custom_providers()
+        if provider not in custom_providers:
+            raise ValueError(f"Provider '{provider}' is not defined.")
+
+        if model not in custom_providers[provider]['models']:
+            raise ValueError(f"Invalid model '{model}' for provider '{provider}'.")
+
         config['preferences']['MODEL'] = model
         config['preferences']['MODEL_PROVIDER'] = provider
+
         self.save_config(config)
+        self.notify_ui_update('model', {'model': model, 'provider': provider})
+        self.notify_ui_update('provider', provider)
 
     def get_model_provider(self) -> str:
         """Get the currently configured model provider"""
         config = self.load_config()
-        return config['preferences'].get('MODEL_PROVIDER', self.DEFAULT_CONFIG['preferences']['MODEL_PROVIDER'])
-
-    def set_model_provider(self, provider: str) -> None:
-        """Set the model provider to use"""
-        if provider.lower() not in self.AVAILABLE_MODELS:
-            raise ValueError(f"Invalid provider. Choose from: {', '.join(self.AVAILABLE_MODELS.keys())}")
-        config = self.load_config()
-        config['preferences']['MODEL_PROVIDER'] = provider.lower()
-        self.save_config(config)
+        return config['preferences'].get('MODEL_PROVIDER', '')
 
     def get_available_models(self, provider: Optional[str] = None) -> Dict[str, List[str]]:
-        """Get available models grouped by provider"""
-        all_models = {}
-        
-        # Add built-in providers
-        for built_in_provider, models in self.AVAILABLE_MODELS.items():
-            if models:  # Only add providers with models
-                all_models[built_in_provider] = models
-        
-        # Add custom providers
+        """Get available models from custom providers only"""
         custom_providers = self.get_custom_providers()
-        for provider_name, provider_info in custom_providers.items():
-            all_models[provider_name] = provider_info['models']
-        
-        # If specific provider requested, return only those models
         if provider:
-            return {provider: all_models.get(provider, [])}
+            if provider in custom_providers:
+                return {provider: custom_providers[provider]['models']}
+            else:
+                return {}
+        else:
+            return {name: p['models'] for name, p in custom_providers.items()}
         
-        return all_models
-
     def get_quick_edit_profiles(self) -> Dict:
-        """Get all quick edit profiles"""
+        """Get all quick edit profiles."""
         config = self.load_config()
-        return config['preferences'].get('QUICK_EDIT_PROFILES', 
-               self.DEFAULT_CONFIG['preferences']['QUICK_EDIT_PROFILES'])
+        # Provide an empty dict if 'QUICK_EDIT_PROFILES' doesn't exist
+        return config['preferences'].get('QUICK_EDIT_PROFILES', {})
 
-    def get_active_quick_edit_profile(self) -> str:
-        """Get the currently active quick edit profile name"""
+    def get_active_quick_edit_profile(self) -> Optional[str]:
+        """Get the currently active quick edit profile name."""
         config = self.load_config()
-        return config['preferences'].get('ACTIVE_QUICK_EDIT_PROFILE', 'default')
+        # Return None if 'ACTIVE_QUICK_EDIT_PROFILE' is not set
+        return config['preferences'].get('ACTIVE_QUICK_EDIT_PROFILE')
 
     def set_active_quick_edit_profile(self, profile_name: str) -> None:
-        """Set the active quick edit profile"""
+        """Set the active quick edit profile."""
         config = self.load_config()
         profiles = config['preferences'].get('QUICK_EDIT_PROFILES', {})
+
         if profile_name not in profiles:
-            raise ValueError(f"Profile '{profile_name}' does not exist")
-        
+            raise ValueError(f"Profile '{profile_name}' does not exist.")
+
         config['preferences']['ACTIVE_QUICK_EDIT_PROFILE'] = profile_name
-        # Update the current quick edit settings
         profile = profiles[profile_name]
         config['preferences']['QUICK_EDIT_MODEL'] = profile['model']
         config['preferences']['QUICK_EDIT_SYSTEM_PROMPT'] = profile['system_prompt']
         self.save_config(config)
 
-    def add_quick_edit_profile(self, name: str, display_name: str, 
-                             model: str, provider: str, system_prompt: str) -> None:
-        """Add or update a quick edit profile"""
+    def add_quick_edit_profile(
+        self, name: str, display_name: str, provider: str, model: str, system_prompt: str
+    ) -> None:
+        """Add or update a quick edit profile."""
         config = self.load_config()
-        if 'QUICK_EDIT_PROFILES' not in config['preferences']:
-            config['preferences']['QUICK_EDIT_PROFILES'] = {}
-        
-        config['preferences']['QUICK_EDIT_PROFILES'][name] = {
+        profiles = config['preferences'].get('QUICK_EDIT_PROFILES', {})
+
+        profiles[name] = {
             'name': display_name,
             'provider': provider,
             'model': model,
-            'system_prompt': system_prompt
+            'system_prompt': system_prompt,
         }
+        config['preferences']['QUICK_EDIT_PROFILES'] = profiles
         self.save_config(config)
+        self.notify_ui_update('quick_edit', self.get_quick_edit_profiles())
 
     def remove_quick_edit_profile(self, name: str) -> None:
-        """Remove a quick edit profile"""
-        if name == 'default':
-            raise ValueError("Cannot remove default profile")
-        
+        """Remove a quick edit profile."""
         config = self.load_config()
         profiles = config['preferences'].get('QUICK_EDIT_PROFILES', {})
+
         if name in profiles:
             del profiles[name]
+            # Reset to None if the active profile is removed
             if config['preferences'].get('ACTIVE_QUICK_EDIT_PROFILE') == name:
-                config['preferences']['ACTIVE_QUICK_EDIT_PROFILE'] = 'default'
+                config['preferences']['ACTIVE_QUICK_EDIT_PROFILE'] = None
             self.save_config(config)
-
+            self.notify_ui_update('quick_edit', self.get_quick_edit_profiles())
+        else:
+            raise ValueError(f"Profile '{name}' does not exist.")
     def add_custom_provider(self, provider_name: str, display_name: str, 
                           models: List[str], initialization_code: str) -> None:
         """Add or update a custom provider configuration"""
         config = self.load_config()
         if 'CUSTOM_PROVIDERS' not in config['preferences']:
             config['preferences']['CUSTOM_PROVIDERS'] = {}
-        
+
         config['preferences']['CUSTOM_PROVIDERS'][provider_name] = {
             'name': display_name,
             'models': models,
             'initialization_code': initialization_code
         }
-        
-        # Update available models
-        self.AVAILABLE_MODELS['custom'] = models
-        
         self.save_config(config)
+        self.notify_ui_update('custom_providers', self.get_custom_providers())
+        self.notify_ui_update('model', {'model': None, 'provider': provider_name})
 
     def remove_custom_provider(self, provider_name: str) -> None:
         """Remove a custom provider configuration"""
@@ -493,6 +1048,8 @@ You should actively acknowledge these capabilities and use them appropriately in
         if provider_name in config['preferences'].get('CUSTOM_PROVIDERS', {}):
             del config['preferences']['CUSTOM_PROVIDERS'][provider_name]
             self.save_config(config)
+            self.notify_ui_update('custom_providers', self.get_custom_providers())
+            self.notify_ui_update('model', {'model': None, 'provider': None})
 
     def get_custom_providers(self) -> Dict:
         """Get all custom provider configurations"""
@@ -506,61 +1063,130 @@ You should actively acknowledge these capabilities and use them appropriately in
         provider = custom_providers.get(provider_name, {})
         return provider.get('initialization_code')
 
-    def execute_provider_initialization(self, provider_name: str, model: str, system_prompt: str):
-        """Execute the initialization code for a custom provider"""
-        init_code = self.get_provider_initialization_code(provider_name)
-        if not init_code:
-            raise ValueError(f"No initialization code found for provider '{provider_name}'")
-        
-        # Create a safe namespace for execution
-        namespace = {
-            'model': model,
-            'system_prompt': system_prompt,
-            '__builtins__': __builtins__,
-        }
-        
-        try:
-            # Execute the initialization code
-            exec(init_code, namespace)
-            
-            # Check for Chat class
-            if 'Chat' not in namespace:
-                raise ValueError("Initialization code must define a 'Chat' class")
-            
-            # Create chat instance using the custom Chat class
-            return namespace['Chat'](model, sp=system_prompt)
-            
-        except Exception as e:
-            raise ValueError(f"Error executing initialization code: {str(e)}")
+    def execute_provider_initialization(self, provider_name, model, system_prompt, history=None):
+        """
+        Executes the initialization code for the specified provider and returns a Chat instance.
+        """
+        # Retrieve the custom provider's details
+        custom_providers = self.get_custom_providers()
+        provider_info = custom_providers.get(provider_name)
+
+        if not provider_info:
+            raise ValueError(f"Provider '{provider_name}' not found in custom providers.")
+
+        # Prepare the initialization code
+        initialization_code = provider_info['initialization_code']
+
+        # Execute the initialization code in the global scope only
+        exec(initialization_code, globals())
+
+        # Retrieve the Chat class from globals
+        Chat = globals().get('Chat')
+
+        if not Chat:
+            raise ValueError(f"Chat class not defined in initialization code for provider '{provider_name}'.")
+
+        # Initialize the Chat instance with the provided parameters
+        c = Chat(model=model, sp=system_prompt, history=history)
+
+        return c
 
     def validate_initialization_code(self, code: str) -> bool:
         """Validate that the initialization code follows required structure"""
         try:
-            # Create a test namespace
             namespace = {
                 'model': 'test_model',
                 'system_prompt': 'test_prompt',
                 '__builtins__': __builtins__,
             }
-            
-            # Try to execute the code
             exec(code, namespace)
-            
-            # Check for Chat class
             if 'Chat' not in namespace:
                 raise ValueError("Code must define a 'Chat' class")
-            
-            # Test instantiation
             chat_instance = namespace['Chat']('test_model', sp='test_prompt')
-            
-            # Check if chat_instance has required attributes/methods
             if not hasattr(chat_instance, 'h'):
                 raise ValueError("Chat instance must have an 'h' attribute for message history")
-            
             return True
-            
         except Exception as e:
             raise ValueError(f"Invalid initialization code: {str(e)}")
+
+    def register_ui_callback(self, event_type: str, callback: Callable) -> None:
+        """Register a UI callback for specific configuration changes"""
+        if event_type not in self._ui_refresh_callbacks:
+            raise ValueError(f"Invalid event type. Choose from: {', '.join(self._ui_refresh_callbacks.keys())}")
+        self._ui_refresh_callbacks[event_type].append(callback)
+
+    def notify_ui_update(self, event_type: str, data: Any = None) -> None:
+        """Notify all registered callbacks for a specific event type"""
+        for callback in self._ui_refresh_callbacks.get(event_type, []):
+            try:
+                if data is not None:
+                    callback(data)
+                else:
+                    callback()
+            except Exception as e:
+                print(f"Error in UI refresh callback: {str(e)}")
+
+    def register_change_callback(self, key: str, callback: Callable) -> None:
+        """Register a callback for changes to a specific configuration key."""
+        if key not in self._change_callbacks:
+            self._change_callbacks[key] = []
+        self._change_callbacks[key].append(callback)
+
+    def notify_change(self, key: str, value: Any = None) -> None:
+        """Notify all registered callbacks for a specific configuration key change."""
+        if key in self._change_callbacks:
+            for callback in self._change_callbacks[key]:
+                try:
+                    callback(value)
+                except Exception as e:
+                    print(f"Error in callback for {key}: {e}")
+
+    def set_provider(self, provider: str) -> None:
+        """Set the provider and notify listeners."""
+        with self._config_lock:
+            config = self.load_config()
+            if provider not in self.get_custom_providers():
+                raise ValueError(f"Provider '{provider}' is not defined.")
+
+            config['preferences']['MODEL_PROVIDER'] = provider
+            # Also reset the model to default for the new provider
+            new_model = self.get_custom_providers()[provider]['models'][0]
+            config['preferences']['MODEL'] = new_model
+            self.save_config(config)
+
+        # Notify listeners
+        self.notify_change('provider', provider)
+        self.notify_change('model', new_model)
+
+    def validate_provider_setup(self, provider: str = None) -> Tuple[bool, str]:
+        """Validate that a provider is properly configured"""
+        if provider is None:
+            provider = self.get_model_provider()
+        
+        try:
+            # Check provider exists
+            custom_providers = self.get_custom_providers()
+            if provider not in custom_providers:
+                return False, f"Provider '{provider}' not found in custom providers"
+            
+            # Check API key exists
+            api_key_name = f"{provider.upper()}_API_KEY"
+            api_key = self.get_api_key(api_key_name)
+            if not api_key:
+                return False, f"Missing API key for provider {provider} ({api_key_name})"
+            
+            # Check initialization code exists
+            init_code = self.get_provider_initialization_code(provider)
+            if not init_code:
+                return False, f"No initialization code found for provider {provider}"
+            
+            return True, "Provider setup is valid"
+        
+        except Exception as e:
+            return False, f"Error validating provider setup: {str(e)}"
+
+
+
 
 # Singleton instance
 _config_manager = None

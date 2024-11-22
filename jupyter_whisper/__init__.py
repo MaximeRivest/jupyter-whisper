@@ -1,31 +1,20 @@
-from fastapi import FastAPI, HTTPException
 from IPython import get_ipython
 from .__version__ import __version__
 from .search import search_online
-from .config import get_config_manager, ConfigManager
-
-__all__ = ['search_online', '__version__', 'setup_jupyter_whisper']
+from .config import get_config_manager
+from IPython.display import display
+__all__ = ['search_online', '__version__', 'setup_jupyter_whisper', 'c', "output_manager"]
 from anthropic.types import TextBlock
 from IPython.core.magic import register_cell_magic
 from IPython.display import display,  clear_output, Markdown
 import time
 import re
 from .search import search_online
-from IPython.display import Javascript
 from ipylab import JupyterFrontEnd
-from fastapi import FastAPI, HTTPException, File, UploadFile
-from pydantic import BaseModel
-import os
-import requests
-import threading
-import nest_asyncio
-from fastapi.middleware.cors import CORSMiddleware
+from .cell_outputs import simplify_markdown_from_history, extract_new_images
 from openai import OpenAI
-import psutil
-from contextlib import asynccontextmanager
-from datetime import datetime
-from io import StringIO
-import sys
+from collections import deque
+from IPython.display import Javascript
 
 # Get model from config
 config_manager = get_config_manager()
@@ -45,192 +34,58 @@ if missing_keys:
 client = None  # Initialize as None initially
 
 
-def get_openai_client():
-    global client
-    if client is None:
-        config_manager = get_config_manager()
-        if config_manager.get_api_key('OPENAI_API_KEY'):
-            client = OpenAI()  # Will use OPENAI_API_KEY from environment/config
-        else:
-            print(
-                "Warning: OpenAI API key not configured. Audio transcription will be unavailable.")
-            print("Run setup_jupyter_whisper() to configure your API keys.")
-    return client
-
 
 # Add global variable to store outputs
-cell_outputs = []  # List to store outputs
 output_catcher = None  # Global variable to hold the OutputCatcher instance
 
-
-class OutputCatcher:
-    def __init__(self):
-        self.stdout = StringIO()
-        self.stderr = StringIO()
-        self._stdout = sys.stdout
-        self._stderr = sys.stderr
-
-    def __enter__(self):
-        sys.stdout = self.stdout
-        sys.stderr = self.stderr
-        return self
-
-    def __exit__(self, *args):
-        sys.stdout = self._stdout
-        sys.stderr = self._stderr
-
-    def get_output(self):
-        return {
-            'stdout': self.stdout.getvalue(),
-            'stderr': self.stderr.getvalue()
-        }
+# Replace the simple list with a deque of fixed size
+captured_images = deque(maxlen=5)  # Will automatically maintain only the last 5 images
 
 
-def create_assistant_cell():
-    a = get_ipython()
-    last_response = c.h[-1]['content']
+#----------------------------------------
+# For magic cells
+#----------------------------------------
 
-    # Handle Claude 3 response format
-    if isinstance(last_response, list):
-        last_response = '\n'.join(block.text for block in last_response
-                                if hasattr(block, 'text'))
+def create_markdown_cell(content, app, count, c):
+    markdown_content = f"%%assistant {len(c.h)-1}\n\n{content}\n"
+    if count == 0:
+        app.commands.execute('notebook:insert-cell-above')
+    else:
+        app.commands.execute('notebook:insert-cell-below')
+    app.commands.execute(
+        'notebook:replace-selection', {'text': markdown_content})
+    app.commands.execute('notebook:change-cell-to-markdown')
+    app.commands.execute('notebook:run-cell')
+    time.sleep(0.4)
+    app.commands.execute('notebook:scroll-cell-center')
+    
+def create_code_cell(code_content, code_lang, app, count, c):
+    code_content = code_content.strip()
+    
 
-    # Handle Claude 3 format in previous messages too
-    if len(c.h) > 1:
-        prev_content = c.h[-2]['content']
-        if isinstance(prev_content, list):
-            prev_content = '\n'.join(block.text for block in prev_content
-                                   if hasattr(block, 'text'))
-            c.h[-2]['content'] = prev_content
+    # For other languages (like bash), just use the language as the magic command
+    if code_lang == "python":
+        code_cell_content = f"#%%assistant {len(c.h)-1}\n{code_content}"
+    elif code_lang == "javascript":
+        code_cell_content = f"%%{code_lang}\n//%%assistant {len(c.h)-1}\n{code_content}"
+    elif code_lang == "r":
+        code_cell_content = f"%%R\n#%%assistant {len(c.h)-1}\n{code_content}"
+    elif code_lang == "html":
+        code_cell_content = f"%%html\n{code_content}"
+    else:
+        code_cell_content = f"%%{code_lang}\n#%%assistant {len(c.h)-1}\n{code_content}"
 
-    # Clear cell outputs from the last user message
-    if len(c.h) > 1 and isinstance(c.h[-2]['content'], str):
-        c.h[-2]['content'] = re.sub(r'<cell_outputs>.*</cell_outputs>',
-                                    '', c.h[-2]['content'])
-
-    # Function to split code blocks from the assistant's response
-    def split_code_blocks(text):
-        parts = []
-        current_part = ""
-        in_code_block = False
-        code_lang = None
-        i = 0
-
-        while i < len(text):
-            # Check for escaped backticks
-            if text[i:i+4] == '\\```':
-                current_part += '```'
-                i += 4
-                continue
-
-            # Check for commented backticks
-            is_commented = False
-            if i > 0:
-                line_start = text.rfind('\n', 0, i)
-                if line_start == -1:
-                    line_start = 0
-                line_prefix = text[line_start:i].lstrip()
-                is_commented = line_prefix.startswith(
-                    '#') or line_prefix.startswith('//')
-
-            # Start of code block
-            if text[i:i+3] == '```' and not in_code_block and not is_commented:
-                if current_part.strip():
-                    parts.append(current_part)
-                current_part = text[i:i+3]
-                i += 3
-                # Language identifier
-                lang_end = text.find('\n', i)
-                if lang_end != -1:
-                    code_lang = text[i:lang_end].strip()
-                    current_part += code_lang + '\n'
-                    i = lang_end + 1
-                in_code_block = True
-            # End of code block
-            elif text[i:i+3] == '```' and in_code_block:
-                current_part += text[i:i+3]
-                parts.append(current_part)
-                current_part = ""
-                in_code_block = False
-                code_lang = None
-                i += 3
-            else:
-                current_part += text[i]
-                i += 1
-
-        if current_part.strip():
-            parts.append(current_part)
-
-        return parts
-
-    parts = split_code_blocks(last_response)
-
-    app = JupyterFrontEnd()
-
-    count = 0
-    for i, part in enumerate(parts):
-        if part.strip():
-            if part.lstrip().startswith('```'):
-                # Handle code block
-                code_content = part
-                if code_content.startswith('```python'):
-                    # Remove language identifier and closing backticks
-                    code_content = code_content.replace(
-                        '```python\n', '', 1).replace('```', '')
-                    code_content = f"\n#%%assistant {len(c.h)-1}\n{code_content}"
-                else:
-                    # Handle other languages
-                    match = re.match(r'```(\w+)\n', code_content)
-                    if match:
-                        lang = match.group(1)
-                        lang = 'R' if lang.lower() == 'r' else lang
-                        code_content = re.sub(
-                            r'```\w+\n', '', code_content, 1).replace('```', '')
-                        code_content = f"%%{lang}\n#%%assistant {len(c.h)-1}\n{code_content}"
-
-                # Insert code cell
-                if count == 0:
-                    app.commands.execute('notebook:insert-cell-above')
-                    time.sleep(0.2)
-                    count += 1
-                else:
-                    app.commands.execute('notebook:insert-cell-below')
-                    time.sleep(0.3)
-                    count += 1
-                app.commands.execute(
-                    'notebook:replace-selection', {'text': code_content})
-            else:
-                # Handle markdown content
-                markdown_content = f"%%assistant {len(c.h)-1}\n\n{part}\n"
-                if count == 0:
-                    app.commands.execute('notebook:insert-cell-above')
-                    time.sleep(0.1)
-                    count += 1
-                else:
-                    app.commands.execute('notebook:insert-cell-below')
-                    time.sleep(0.3)
-                    count += 1
-                app.commands.execute(
-                    'notebook:replace-selection', {'text': markdown_content})
-                app.commands.execute('notebook:change-cell-to-markdown')
-                app.commands.execute('notebook:run-cell')
-
-            time.sleep(0.4)
-            app.commands.execute('notebook:scroll-cell-center')
-
-    # Create the next user cell
-    app.commands.execute('notebook:insert-cell-below')
-    time.sleep(0.2)
-    app.commands.execute('notebook:replace-selection',
-                         {'text': f"%%user {len(c.h)}\n\n"})
+    if count == 0:
+        app.commands.execute('notebook:insert-cell-above')
+    else:
+        app.commands.execute('notebook:insert-cell-below')
+    app.commands.execute(
+        'notebook:replace-selection', {'text': code_cell_content})
+    time.sleep(0.4)
     app.commands.execute('notebook:scroll-cell-center')
 
 
 def go(cell):
-    # Replace empty cell or whitespace-only cell with 'continue'
-    if not cell or cell.isspace():
-        cell = 'continue'
-
     # Process expressions within {}
     pattern = r'\{([^}]+)\}'
 
@@ -244,24 +99,142 @@ def go(cell):
             return f"[Error: {str(e)}]"
 
     cell = re.sub(pattern, eval_match, cell)
+
+    global c, captured_images
+    if c is None:
+        print("❌ Chat instance not initialized. Please save your configuration.")
+        return
+
+    if not cell or cell.isspace():
+        cell = 'proceed'
+
     app = JupyterFrontEnd()
-    words = 0
-    text = ""
-    for word_piece in c(cell + f"""<cell_outputs> In here you have all the current jupyter context that we run so far. Use judiciously. {cell_outputs}</cell_outputs>""", stream=True):
-        words += 1
-        # Handle Claude 3 response format
-        if isinstance(word_piece, (list, TextBlock)):
-            text += word_piece.text if hasattr(word_piece, 'text') else ''
-        else:
-            text += word_piece
-        if words % 20 == 0:
-            clear_output(wait=False)
-            display(Markdown(text))
-            app.commands.execute('notebook:scroll-cell-center')
-    clear_output(wait=False)
-    create_assistant_cell()
+    
+    try:
+        # Initialize variables for streaming parsing
+        buffer = ""
+        in_code_block = False
+        code_block_lang = None
+        cell_count = 0
+
+        # Clear cell outputs from all previous messages
+        for msg in c.h:
+            if isinstance(msg['content'], str):
+                msg['content'] = re.sub(r'<cell_outputs>.*</cell_outputs>', 
+                                      '', 
+                                      msg['content'], 
+                                      flags=re.DOTALL)
+
+        # Prepare message content with new cell outputs for the current user message
+        message_content = {
+            "type": "text",
+            "text": cell + f"""<cell_outputs> {simplify_markdown_from_history(output_manager.history)}</cell_outputs>"""
+        }
+
+        # Stream the assistant's response
+        display(Javascript("window.streamingPopup.show();"))
+        clear_output(wait=True) 
+        buffer = ""
+        all_word_pieces = ""
+        
+        for word_piece in c(
+            message_content["text"],
+            images=extract_new_images(output_manager.history),
+            stream=True
+        ):
+            # Append the incoming word_piece
+            if isinstance(word_piece, (list, TextBlock)):
+                word = word_piece.text if hasattr(word_piece, 'text') else ''
+            else:
+                word = word_piece
+            buffer += word
+            all_word_pieces += word
+            # Check for code block markers in the buffer
+            while True:
+                if not in_code_block:
+                    code_block_start = buffer.find('```')
+                    if code_block_start != -1:
+                        # Check if we have enough content after ``` to determine the language
+                        remaining = buffer[code_block_start + 3:]
+                        if '\n' not in remaining:
+                            # Not enough content yet, wait for more
+                            break
+                       
+                        markdown_content = buffer[:code_block_start].strip()
+                        if markdown_content:
+                            # Escape backticks in markdown content
+                            markdown_content = markdown_content.replace('`', '\\`')
+                            create_markdown_cell(markdown_content, app, cell_count, c)
+                            cell_count += 1
+                        elif markdown_content == '':
+                            create_markdown_cell('<br>', app, cell_count, c)
+                            cell_count += 1
+                        
+                        # Extract everything after ```
+                        buffer = buffer[code_block_start + 3:]
+                        
+                        # Find the language - everything up to the first newline
+                        lang_end = buffer.find('\n')
+                        if lang_end != -1:
+                            code_block_lang = buffer[:lang_end].strip()
+                            buffer = buffer[lang_end + 1:]
+                        else:
+                            code_block_lang = ''
+                        in_code_block = True
+                    else:
+                        break
+                else:
+                    code_block_end = buffer.find('```')
+                    if code_block_end != -1:
+                        # Extract code content up to the end of the code block
+                        code_content = buffer[:code_block_end].strip()
+                        # Escape backticks within the code content
+                        code_content = code_content.replace('`', '\\`')
+                        create_code_cell(code_content, code_block_lang, app, cell_count, c)
+                        cell_count += 1
+                        buffer = buffer[code_block_end + 3:]
+                        in_code_block = False
+                        code_block_lang = None
+                    else:
+                        break
 
 
+            # Properly escape the text for JavaScript
+            safe_text = (all_word_pieces.replace('\\', '\\\\')
+                              .replace('\n', '\\n')
+                              .replace('\r', '\\r')
+                              .replace("'", "\\'")
+                              .replace('"', '\\"'))
+            
+            js_code = f"""
+                (function() {{
+                    document.getElementById('streaming-content').textContent = '{safe_text}';
+                }})();
+            """
+            display(Javascript(js_code))
+            clear_output(wait=True) 
+            
+        # Hide the popup when done
+        display(Javascript("window.streamingPopup.hide();"))
+        clear_output(wait=True) 
+
+        # Handle any remaining content in the buffer after streaming completes
+        if buffer.strip():
+            if in_code_block:
+                # Handle unclosed code block
+                create_code_cell(buffer.strip(), code_block_lang, app, cell_count, c)
+            else:
+                create_markdown_cell(buffer.strip(), app, cell_count, c)
+        # Create the next user cell
+        app.commands.execute('notebook:insert-cell-below')
+        time.sleep(0.4)
+        app.commands.execute('notebook:replace-selection',
+                             {'text': f"%%user {len(c.h)}\n\n"})
+        app.commands.execute('notebook:scroll-cell-center')
+        captured_images.clear()
+    except Exception as e:
+        print(f"❌ Error during magic cell execution: {str(e)}")
+        
 @register_cell_magic
 def user(line, cell):
     global c
@@ -270,10 +243,7 @@ def user(line, cell):
     action = parts[1] if len(parts) > 1 else None
 
     if index == 0:
-        config_manager = get_config_manager()
-        # Use the globally defined Chat class
-        c = globals()['Chat'](config_manager.get_model(),
-                    sp=config_manager.get_system_prompt())
+        c = initialize_chat()
         # Update c in user's namespace when reset
         get_ipython().user_ns['c'] = c
 
@@ -352,520 +322,27 @@ a.set_next_input("%%user 0\n\n", replace=False)
 
 ip = get_ipython()
 
+#----------------------------------------
+# For providing cell outputs to the model
+#----------------------------------------
+from .cell_outputs import JupyterOutputManager
 
-def determine_cell_type(raw_cell):
-    """Determine the cell type based on content"""
-    if not raw_cell:
-        return 'unknown'
+# Initialize the output manager and register hooks
+output_manager = JupyterOutputManager()
+#----------------------------------------
+# For the API
+#----------------------------------------
 
-    # Check for magic commands
-    if raw_cell.startswith('%%'):
-        magic_type = raw_cell[2:].split('\n')[0].strip()
-        return f'magic_{magic_type}'
 
-    # Check for markdown cells (usually start with #, >, or contain markdown syntax)
-    if raw_cell.lstrip().startswith(('#', '>', '-', '*', '```')):
-        return 'markdown'
 
-    # Check if it's mostly code
-    code_indicators = ['def ', 'class ', 'import ',
-        'from ', 'print(', 'return ', '    ']
-    if any(indicator in raw_cell for indicator in code_indicators):
-        return 'code'
-
-    return 'text'
-
-
-def pre_run_cell(info):
-    global output_catcher
-    output_catcher = OutputCatcher()
-    output_catcher.__enter__()  # Start capturing
-
-
-def post_run_cell(result):
-    global cell_outputs, output_catcher
-
-    # Finish capturing
-    if output_catcher is not None:
-        output_catcher.__exit__()
-        outputs = output_catcher.get_output()
-        output_catcher = None
-    else:
-        outputs = {'stdout': '', 'stderr': ''}
-
-    # Get raw cell content
-    raw_cell = getattr(result.info, 'raw_cell', '')
-    exec_count = getattr(result.info, 'execution_count', None)
-
-    # Initialize output data
-    output_data = {
-        'execution_count': exec_count,
-        'input': raw_cell,
-        'output': None,
-        'stdout': outputs['stdout'],
-        'stderr': outputs['stderr'],
-        'error': None,
-        'timestamp': datetime.now(),
-        'type': determine_cell_type(raw_cell)
-    }
-
-    # Display captured stdout/stderr immediately if not empty
-    if outputs['stdout']:
-        print(outputs['stdout'], end='')
-    if outputs['stderr']:
-        print(outputs['stderr'], file=sys.stderr, end='')
-
-    # Check for errors
-    if hasattr(result, 'error_in_exec') and result.error_in_exec is not None:
-        output_data['error'] = str(result.error_in_exec)
-        if hasattr(result, 'traceback'):
-            output_data['stderr'] += '\n'.join(result.traceback)
-
-    # Get the result of the cell execution
-    if hasattr(result, 'result') and result.result is not None:
-        output_data['output'] = str(result.result)
-
-    # Collect display outputs
-    if hasattr(result, 'display_outputs'):
-        for display_output in result.display_outputs:
-            if display_output.output_type == 'stream':
-                if display_output.name == 'stdout':
-                    output_data['stdout'] += display_output.text
-                elif display_output.name == 'stderr':
-                    output_data['stderr'] += display_output.text
-            elif display_output.output_type == 'error':
-                output_data['error'] = display_output.evalue
-                output_data['stderr'] += '\n'.join(display_output.traceback)
-            elif display_output.output_type == 'execute_result':
-                if 'text/plain' in display_output.data:
-                    output_data['output'] = display_output.data['text/plain']
-            elif display_output.output_type == 'display_data':
-                # Handle outputs from magic commands like %%bash
-                if 'text/plain' in display_output.data:
-                    output_data['stdout'] += display_output.data['text/plain']
-                elif 'text/html' in display_output.data:
-                    output_data['stdout'] += display_output.data['text/html']
-
-    # Append to cell_outputs
-    if raw_cell.strip():
-        cell_outputs.append(output_data)
-
-    # Debug logging
-    if DEBUG:
-        print(f"Captured output for cell type {output_data['type']}:")
-        print(f"stdout: {output_data['stdout']}")
-        print(f"stderr: {output_data['stderr']}")
-        print(f"output: {output_data['output']}")
-        print(f"error: {output_data['error']}")
-
-
-# Register the hooks
-ip.events.register('pre_run_cell', pre_run_cell)
-ip.events.register('post_run_cell', post_run_cell)
-
-
-def hist():
-    """Display the chat history in a nicely formatted markdown view"""
-    history_md = "# 💬 Chat History\n\n"
-    for i, msg in enumerate(c.h):
-        role = msg['role'].title()
-
-        # Handle different content structures
-        if isinstance(msg['content'], list):
-            # Handle list of content blocks (Claude 3 format)
-            content = '\n'.join(block.text for block in msg['content']
-                              if isinstance(block, TextBlock))
-        else:
-            # Handle direct string content
-            content = msg['content']
-
-        # Add emoji based on role
-        emoji = "🤖" if role == "Assistant" else "👤"
-
-        # Add message header with role and index
-        history_md += f"### {emoji} {role} [{i}]\n\n"
-
-        # Add message content with proper indentation
-        content = content.strip()  # Remove extra whitespace
-        history_md += f"{content}\n\n"
-
-        # Add a subtle separator
-        history_md += "<hr style='border-top: 1px solid #ccc'>\n\n"
-
-    display(Markdown(history_md))
-
-
-class TextRequest(BaseModel):
-    selectedText: str
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    yield
-    if DEBUG:
-        print("Server shutting down...")
-    # Add any cleanup code here if needed
-
-app = FastAPI(lifespan=lifespan)
-
-# Add CORS middleware to the app
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
-    allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers
-    expose_headers=["*"],  # Expose all headers
-    max_age=3600,  # Cache preflight requests for 1 hour
-)
-
-
-@app.post("/quick_edit")
-async def quick_edit(request: TextRequest):
-    if DEBUG:
-        print(
-            f"Received request with text length: {len(request.selectedText)}")
-
-    config = get_config_manager()
-    api_key = config.get_api_key('ANTHROPIC_API_KEY')
-
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="ANTHROPIC_API_KEY not found. Please run setup_jupyter_whisper() to configure."
-        )
-
-    url = 'https://api.anthropic.com/v1/messages'
-    headers = {
-        'x-api-key': api_key,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
-    }
-
-    # Get quick edit configurations
-    quick_edit_model = config.get_config_value(
-        'QUICK_EDIT_MODEL', 'claude-3-5-sonnet-20241022')
-    quick_edit_system_prompt = config.get_config_value(
-        'QUICK_EDIT_SYSTEM_PROMPT')
-
-    data = {
-        "model": quick_edit_model,
-        "system": quick_edit_system_prompt,
-        "messages": [
-            {"role": "user", "content": request.selectedText}
-        ],
-        "max_tokens": 8192
-    }
-
-    try:
-        response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.HTTPError as e:
-        if DEBUG:
-            print(f"HTTP Error: {str(e)}")
-            print(f"Response content: {e.response.text}")
-        raise HTTPException(
-            status_code=500, detail=f"Anthropic API error: {str(e)}")
-    except requests.exceptions.RequestException as e:
-        if DEBUG:
-            print(f"Request Error: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"Request failed: {str(e)}")
-    except Exception as e:
-        if DEBUG:
-            print(f"Unexpected Error: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"Unexpected error: {str(e)}")
-
-
-@app.post("/audio")
-async def process_audio(audio: UploadFile = File(...)):
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "*",
-    }
-    # Add debug logging
-    if DEBUG:
-        print("Audio processing request received")
-        print(f"Current OpenAI client configuration:")
-        print(
-            f"- Environment key: {os.environ.get('OPENAI_API_KEY', 'Not set')[:8]}...")
-
-    client = get_openai_client()
-    if client is None:
-        raise HTTPException(
-            status_code=400,
-            detail="OpenAI API key not configured. Please run setup_jupyter_whisper() first."
-        )
-
-    # More debug logging
-    if DEBUG:
-        print(f"OpenAI client initialized with key: {client.api_key[:8]}...")
-
-    # List of supported audio formats
-    SUPPORTED_FORMATS = ['flac', 'm4a', 'mp3', 'mp4',
-        'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm']
-
-    try:
-        # Check file extension
-        file_extension = audio.filename.split('.')[-1].lower()
-        if file_extension not in SUPPORTED_FORMATS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported file format. Supported formats: {SUPPORTED_FORMATS}"
-            )
-
-        # Save the uploaded file temporarily
-        temp_file_path = f"temp_{audio.filename}"
-        with open(temp_file_path, "wb") as temp_file:
-            contents = await audio.read()
-            temp_file.write(contents)
-
-        # Open and transcribe the audio file using Whisper
-        with open(temp_file_path, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file
-            )
-
-        if DEBUG:
-            print(f"Transcript: {transcription}")
-
-        # Clean up temporary file
-        # os.remove(temp_file_path)
-
-        # Return the actual transcription text
-        return {"text": transcription}, headers
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        if DEBUG:
-            print(f"Audio processing error: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to process audio: {str(e)}")
-    finally:
-        # Ensure temp file is cleaned up even if an error occurs
-        if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
-
-
-def shutdown_existing_server():
-    if DEBUG:
-        print("Checking for existing server on port 5000...")
-
-    for proc in psutil.process_iter(['pid', 'name']):
-        try:
-            # Get connections separately
-            connections = proc.net_connections()
-            for conn in connections:
-                if hasattr(conn, 'laddr') and hasattr(conn.laddr, 'port') and conn.laddr.port == 5000:
-                    if DEBUG:
-                        print(f"Found process using port 5000: PID {proc.pid}")
-                    proc.terminate()
-                    proc.wait()  # Wait for the process to terminate
-                    if DEBUG:
-                        print("Successfully terminated existing server")
-                    return
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-        except Exception as e:
-            if DEBUG:
-                print(f"Error checking process {proc.pid}: {e}")
-            continue
-
-
-def check_existing_server(port=5000, retries=3, delay=0.5):
-    """Check if there's an existing server running with retries"""
-    for attempt in range(retries):
-        try:
-            response = requests.get(
-                f"http://localhost:{port}/status", timeout=1)
-            if response.status_code == 200:
-                # Verify it's our server by checking response format
-                data = response.json()
-                if "status" in data and "pid" in data:
-                    if DEBUG:
-                        print(
-                            f"Found existing server on port {port} (PID: {data['pid']})")
-                    return True
-        except requests.exceptions.RequestException:
-            if DEBUG and attempt == retries - 1:
-                print(
-                    f"No existing server found on port {port} after {retries} attempts")
-            time.sleep(delay)
-            continue
-    return False
-
-
-# Global flag to track server initialization
-_server_initialized = False
-
-
-def start_server_if_needed():
-    """Start server only if no server is running"""
-    global _server_initialized
-
-    # Prevent multiple initialization attempts
-    if _server_initialized:
-        return
-
-    try:
-        response = requests.get('http://localhost:5000/status', timeout=1)
-        if response.status_code == 200:
-            server_info = response.json()
-            print(f"Using existing server (PID: {server_info.get('pid')})")
-            if DEBUG:
-                print(f"Server version: {server_info.get('version')}")
-                print(
-                    f"Memory usage: {server_info.get('memory_usage', 0):.2f} MB")
-            _server_initialized = True
-            return
-    except requests.exceptions.RequestException:
-        if DEBUG:
-            print("No existing server found, starting new one...")
-
-        # Start new server in a thread
-        server_thread = threading.Thread(target=run_server, daemon=True)
-        server_thread.start()
-
-        # Wait for server to be ready
-        for _ in range(5):  # Try 5 times
-            time.sleep(1)  # Wait a bit between attempts
-            try:
-                requests.get('http://localhost:5000/status', timeout=1)
-                _server_initialized = True
-                return
-            except requests.exceptions.RequestException:
-                continue
-
-        if DEBUG:
-            print("Warning: Server may not have started properly")
-
-
-def run_server():
-    """Start the FastAPI server"""
-    import asyncio
-    from uvicorn.config import Config
-    from uvicorn.server import Server
-
-    if DEBUG:
-        print("Starting FastAPI server on port 5000...")
-
-    config = Config(
-        app=app,
-        host="0.0.0.0",
-        port=5000,
-        log_level="warning",  # Reduce logging noise
-        timeout_keep_alive=30,
-        limit_concurrency=100
-    )
-
-    server = Server(config=config)
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    nest_asyncio.apply()
-
-    try:
-        loop.run_until_complete(server.serve())
-    except Exception as e:
-        if DEBUG:
-            print(f"Server error: {e}")
-
-
-# Initialize only once at import
-start_server_if_needed()
-
-
-@app.get("/status")
-async def status():
-    """Health check endpoint with server info"""
-    return {
-        "status": "ok",
-        "pid": os.getpid(),
-        "timestamp": time.time(),
-        "version": __version__,
-        "memory_usage": psutil.Process().memory_info().rss / 1024 / 1024  # MB
-    }
-
-# Add graceful shutdown handler
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on server shutdown"""
-    if DEBUG:
-        print("Server shutting down...")
-    # Add any cleanup code here if needed
-
-# Add this JavaScript injection function before the server startup
-
-
-def inject_js():
-    # First, inject cleanup code
-    cleanup_js = """
-    if (window.cleanupAllHandlers) {
-        window.cleanupAllHandlers();
-        console.log('Cleaned up existing handlers');
-    }
-    """
-    display(Javascript(cleanup_js))
-
-    # Then read and inject the main code
-    try:
-        import os
-        import pkg_resources
-
-        # Get the package's installed location
-        static_dir = pkg_resources.resource_filename(
-            'jupyter_whisper', 'static')
-
-        # Ensure static directory exists
-        os.makedirs(static_dir, exist_ok=True)
-
-        # Define default JS content if files don't exist
-        default_main_js = """// Default main.js content
-console.log('Using default main.js content');
-// Add your default main.js content here
-"""
-        default_voice_js = """// Default voicerecorder.js content
-console.log('Using default voicerecorder.js content');
-// Add your default voicerecorder.js content here
-"""
-
-        # Try to read files, use defaults if not found
-        try:
-            with open(os.path.join(static_dir, 'main.js'), 'r') as f:
-                main_js = f.read()
-        except FileNotFoundError:
-            main_js = default_main_js
-
-        try:
-            with open(os.path.join(static_dir, 'voicerecorder.js'), 'r') as f:
-                voice_js = f.read()
-        except FileNotFoundError:
-            voice_js = default_voice_js
-
-        # Combine the JS code
-        js_code = voice_js + "\n\n" + main_js
-
-        # Replace debug value
-        js_code = js_code.replace(
-            '{debug_value}', 'true' if DEBUG else 'false')
-
-        display(Javascript(js_code))
-
-    except Exception as e:
-        print(f"Warning: Error loading JavaScript files: {e}")
-        print("Some features may be limited.")
-
+# For the server
+#----------------------------------------
+from .server import start_server_if_needed, inject_js
 
 # Modify the server startup section to include the JS injection
 start_server_if_needed()
 inject_js()
+
 
 
 def setup_jupyter_whisper(force_display=False):
@@ -876,7 +353,6 @@ def setup_jupyter_whisper(force_display=False):
         config_manager = get_config_manager()
 
         # Global variables
-        available_models_dict = config_manager.get_available_models()
         custom_providers = config_manager.get_custom_providers()
         profiles = config_manager.get_quick_edit_profiles()
         active_profile = config_manager.get_active_quick_edit_profile()
@@ -892,262 +368,204 @@ def setup_jupyter_whisper(force_display=False):
 
             # Set default value safely
             if model_dropdown.value in models:
-                # Keep current value
                 pass
             elif models:
                 model_dropdown.value = models[0]
             else:
                 model_dropdown.value = None
 
-        def update_profile_model_options(*args):
-            """Update model options when provider changes in profile settings"""
-            provider = profile_provider_dropdown.value
-            available_models = available_models_dict.get(provider, [])
-            profile_model_dropdown.options = available_models
+        def on_provider_changed(change):
+            """Handle provider change from the widget."""
+            new_provider = change['new']
+            update_model_options()
+            config_manager.set_provider(new_provider)  # This will trigger the callback
 
-            # Ensure the selected model is valid
-            if profile_model_dropdown.value in available_models:
-                # Keep current value
+        def on_model_changed(change):
+            """Handle model change from the widget."""
+            new_model = change['new']
+            config_manager.set_model(new_model)  # This will trigger the callback
+
+        def on_profile_button_clicked(button):
+            """Handle profile button clicks"""
+            profile_id = button._profile_id
+            config_manager.set_active_quick_edit_profile(profile_id)
+            # Update active button styles
+            for btn in profile_buttons.values():
+                btn.button_style = 'info' if btn._profile_id == profile_id else ''
+            # Load profile settings into UI
+            profile_data = profiles[profile_id]
+            profile_name_input.value = profile_data['name']
+            profile_provider_dropdown.value = profile_data.get('provider', 'grok')
+            profile_model_dropdown.value = profile_data['model']
+            profile_system_prompt.value = profile_data['system_prompt']
+
+        def update_profile_model_options(*args):
+            """Update model options in the Quick Edit tab when provider changes"""
+            provider = profile_provider_dropdown.value
+            models = available_models_dict.get(provider, [])
+            profile_model_dropdown.options = models
+
+            # Set default value safely
+            if profile_model_dropdown.value in models:
                 pass
-            elif available_models:
-                profile_model_dropdown.value = available_models[0]
+            elif models:
+                profile_model_dropdown.value = models[0]
             else:
                 profile_model_dropdown.value = None
 
+        def on_add_profile_clicked(button):
+            """Handle adding a new profile"""
+            new_profile_id = f'profile_{len(profiles) + 1}'
+            new_profile_data = {
+                'name': 'New Profile',
+                'provider': provider_options[0] if provider_options else '',
+                'model': '',
+                'system_prompt': ''
+            }
+            profiles[new_profile_id] = new_profile_data
+            config_manager.add_quick_edit_profile(
+                name=new_profile_id,
+                display_name=new_profile_data['name'],
+                provider=new_profile_data['provider'],
+                model=new_profile_data['model'],
+                system_prompt=new_profile_data['system_prompt']
+            )
+            # Update UI
+            update_profile_buttons()
+            profile_buttons[new_profile_id].click()
+
+        def on_delete_profile_clicked(button):
+            """Handle deleting a profile"""
+            profile_id = config_manager.get_active_quick_edit_profile()
+            if profile_id == 'default':
+                with status_output:
+                    clear_output()
+                    print("Cannot delete the default profile.")
+                return
+            config_manager.remove_quick_edit_profile(profile_id)
+            # Update UI
+            update_profile_buttons()
+            # Set active profile to default
+            profile_buttons['default'].click()
+
+        def on_save_clicked(button):
+            """Handle saving configurations"""
+            # Save API keys
+            for key_name, key_info in keys.items():
+                key_value = key_info['widget'].value.strip()
+                if key_value:
+                    config_manager.set_api_key(key_name, key_value)
+            # Save model and provider
+            selected_provider = provider_dropdown.value
+            selected_model = model_dropdown.value
+            config_manager.set_model(selected_model, provider=selected_provider)
+            # Save system prompt
+            config_manager.set_system_prompt(system_prompt.value)
+            # Save skip setup preference
+            config_manager.set_config_value('SKIP_SETUP_POPUP', skip_setup_checkbox.value)
+            # Save active quick edit profile
+            profile_id = config_manager.get_active_quick_edit_profile()
+            profile_data = profiles[profile_id]
+            profile_data['name'] = profile_name_input.value.strip()
+            profile_data['provider'] = profile_provider_dropdown.value
+            profile_data['model'] = profile_model_dropdown.value
+            profile_data['system_prompt'] = profile_system_prompt.value
+            config_manager.add_quick_edit_profile(
+                name=profile_id,
+                display_name=profile_data['name'],
+                provider=profile_data['provider'],
+                model=profile_data['model'],
+                system_prompt=profile_data['system_prompt']
+            )
+            with status_output:
+                clear_output()
+                print("Configuration saved successfully.")
+
+        def on_reset_prompts_clicked(button):
+            """Handle resetting prompts to default"""
+            config_manager.set_system_prompt(config_manager.DEFAULT_CONFIG['system_prompt'])
+            system_prompt.value = config_manager.get_system_prompt()
+            with status_output:
+                clear_output()
+                print("System prompt reset to default.")
+
         def update_profile_buttons():
-            """Refresh profile buttons"""
+            """Update the profile buttons in the UI"""
+            # Clear existing buttons
+            profile_buttons_container.children = []
             profile_buttons.clear()
+            # Recreate buttons
             for profile_id, profile in profiles.items():
                 btn = widgets.Button(
                     description=profile['name'],
                     layout=widgets.Layout(margin='2px'),
                     button_style='info' if profile_id == active_profile else ''
                 )
-                btn._profile_id = profile_id
-                btn.on_click(on_profile_button_clicked)
+                btn._profile_id = profile_id  # Store profile ID
                 profile_buttons[profile_id] = btn
+                btn.on_click(on_profile_button_clicked)
             profile_buttons_container.children = list(profile_buttons.values())
 
-        def update_profile_ui(profile_id):
-            """Update UI to reflect selected profile"""
-            profile = profiles[profile_id]
-            profile_name_input.value = profile['name']
-            provider = profile.get('provider', 'anthropic')
-            model = profile['model']
-
-            # Set provider and update models
-            profile_provider_dropdown.value = provider
-            # This will automatically update the model options
-            update_profile_model_options()
-            # Set model
-            if model in profile_model_dropdown.options:
-                profile_model_dropdown.value = model
-            elif profile_model_dropdown.options:
-                profile_model_dropdown.value = profile_model_dropdown.options[0]
-            else:
-                profile_model_dropdown.value = None
-
-            # Update system prompt
-            profile_system_prompt.value = profile['system_prompt']
-
-            # Update button styles
-            for btn in profile_buttons.values():
-                btn.button_style = 'info' if btn._profile_id == profile_id else ''
-
-        def on_profile_button_clicked(b):
-            """Handle profile button clicks"""
-            profile_id = b._profile_id
-            config_manager.set_active_quick_edit_profile(profile_id)
-            profiles.update(config_manager.get_quick_edit_profiles())  # Refresh profiles data
-            update_profile_ui(profile_id)
-
-        def on_add_profile_clicked(b):
-            """Handle adding new profile"""
-            new_id = f"profile_{len(profiles)}"
-            new_name = f"New Profile {len(profiles)}"
-            config_manager.add_quick_edit_profile(
-                new_id,
-                new_name,
-                profile_provider_dropdown.value,
-                profile_model_dropdown.value,
-                "Enter system prompt here..."
-            )
-            # Refresh UI
-            profiles.update(config_manager.get_quick_edit_profiles())
-            update_profile_buttons()
-            # Set the new profile as active
-            config_manager.set_active_quick_edit_profile(new_id)
-            update_profile_ui(new_id)
-
-        def on_delete_profile_clicked(b):
-            """Handle deleting current profile"""
-            current_profile = config_manager.get_active_quick_edit_profile()
-            if current_profile != 'default':
-                try:
-                    config_manager.remove_quick_edit_profile(current_profile)
-                    profiles.update(config_manager.get_quick_edit_profiles())
-                    update_profile_buttons()
-                    # Switch to default profile
-                    config_manager.set_active_quick_edit_profile('default')
-                    update_profile_ui('default')
-                except Exception as e:
-                    with status_output:
-                        clear_output()
-                        print(f"Error deleting profile: {str(e)}")
-
-        def on_save_clicked(b):
-            global c  # Access global variables
-            with status_output:
-                clear_output()
-                try:
-                    # Save API keys
-                    for key_name, key_info in keys.items():
-                        widget = key_info['widget']
-                        value = widget.value.strip()
-                        if value and key_info['validate'](value):
-                            config_manager.set_api_key(key_name, value)
-
-                    # Save provider and model selection in Model tab
-                    if model_dropdown.value is None:
-                        raise ValueError("Please select a valid model")
-
-                    config_manager.set_model(
-                        model=model_dropdown.value,
-                        provider=provider_dropdown.value
-                    )
-
-                    # Save system prompt
-                    config_manager.set_system_prompt(system_prompt.value)
-
-                    # Save current profile changes
-                    current_profile = config_manager.get_active_quick_edit_profile()
-                    config_manager.add_quick_edit_profile(
-                        current_profile,
-                        profile_name_input.value,
-                        profile_provider_dropdown.value,
-                        profile_model_dropdown.value,
-                        profile_system_prompt.value
-                    )
-
-                    # Save popup preference
-                    config_manager.set_config_value('SKIP_SETUP_POPUP', skip_setup_checkbox.value)
-
-                    # Update UI
-                    update_profile_buttons()
-
-                    print("\n✅ Configuration saved successfully!")
-                    print("\n✅ Quick Edit profiles updated!")
-                except Exception as e:
-                    print(f"\n❌ Error saving configuration: {str(e)}")
-            c = initialize_chat()
-
-        def on_reset_prompts_clicked(b):
-            with status_output:
-                clear_output()
-                # Reset system prompts to default
-                default_system_prompt = config_manager.DEFAULT_CONFIG['system_prompt']
-                default_quick_edit_profiles = config_manager.DEFAULT_CONFIG['preferences']['QUICK_EDIT_PROFILES']
-
-                system_prompt.value = default_system_prompt
-                # Reset each profile's system prompt
-                for profile_id in profiles:
-                    profiles[profile_id]['system_prompt'] = default_quick_edit_profiles[profile_id]['system_prompt']
-
-                profile_system_prompt.value = profiles[active_profile]['system_prompt']
-
-                print("System prompts have been reset to default values.")
-
-        # Event handlers for custom providers
         def on_custom_provider_selected(change):
-            """Update UI fields when a custom provider is selected."""
-            provider_id = change['new']
-            if provider_id and provider_id in custom_providers:
-                provider_data = custom_providers[provider_id]
-                provider_name_input.value = provider_id
-                display_name_input.value = provider_data['name']
-                models_input.value = ', '.join(provider_data['models'])
-                initialization_code_input.value = provider_data['initialization_code']
-            else:
-                provider_name_input.value = ''
-                display_name_input.value = ''
-                models_input.value = ''
-                initialization_code_input.value = ''
-
-        def on_save_provider_clicked(b):
-            """Save or update the custom provider."""
-            provider_id = provider_name_input.value.strip()
-            if not provider_id:
-                with status_output:
-                    clear_output()
-                    print("Provider Name is required.")
+            """Handle selection of a custom provider in Advanced Settings"""
+            provider_name = change['new']
+            if not provider_name:
                 return
-            display_name = display_name_input.value.strip() or provider_id
-            models = [m.strip() for m in models_input.value.strip().split(',') if m.strip()]
-            initialization_code = initialization_code_input.value.strip()
+            provider_data = custom_providers[provider_name]
+            provider_name_input.value = provider_name
+            display_name_input.value = provider_data['name']
+            models_input.value = ', '.join(provider_data['models'])
+            initialization_code_input.value = provider_data['initialization_code']
 
-            try:
-                # Validate the initialization code
-                config_manager.validate_initialization_code(initialization_code)
-                # Add or update the provider
-                config_manager.add_custom_provider(
-                    provider_id, display_name, models, initialization_code
-                )
-                # Refresh custom providers
-                custom_providers.update(config_manager.get_custom_providers())
-                # Update the provider dropdown
-                provider_options = [(p['name'], name) for name, p in custom_providers.items()]
-                custom_provider_dropdown.options = provider_options
-                custom_provider_dropdown.value = provider_id
-                with status_output:
-                    clear_output()
-                    print(f"Provider '{display_name}' saved successfully.")
-                # Update models in other tabs
-                available_models_dict.update(config_manager.get_available_models())
-                update_model_options()
-                update_profile_model_options()
-            except Exception as e:
-                with status_output:
-                    clear_output()
-                    print(f"Error saving provider: {str(e)}")
-
-        def on_add_new_provider_clicked(b):
-            """Clear input fields to add a new provider."""
-            custom_provider_dropdown.value = None
+        def on_add_new_provider_clicked(button):
+            """Handle adding a new custom provider"""
             provider_name_input.value = ''
             display_name_input.value = ''
             models_input.value = ''
             initialization_code_input.value = ''
 
-        def on_delete_provider_clicked(b):
-            """Delete the selected custom provider."""
-            provider_id = provider_name_input.value.strip()
-            if not provider_id or provider_id not in custom_providers:
+        def on_save_provider_clicked(button):
+            """Handle saving a custom provider"""
+            provider_name = provider_name_input.value.strip()
+            display_name = display_name_input.value.strip()
+            models = [m.strip() for m in models_input.value.split(',') if m.strip()]
+            init_code = initialization_code_input.value
+            if not provider_name or not display_name or not models or not init_code:
                 with status_output:
                     clear_output()
-                    print("No provider selected to delete.")
+                    print("Please fill in all fields for the provider.")
                 return
+            # Validate initialization code
             try:
-                config_manager.remove_custom_provider(provider_id)
-                custom_providers.update(config_manager.get_custom_providers())
-                provider_options = [(p['name'], name) for name, p in custom_providers.items()]
-                if provider_options:
-                    custom_provider_dropdown.options = provider_options
-                    custom_provider_dropdown.value = provider_options[0][1]
-                else:
-                    custom_provider_dropdown.options = [("No providers available", None)]
-                    custom_provider_dropdown.value = None
-                on_add_new_provider_clicked(None)  # Clear fields
+                config_manager.validate_initialization_code(init_code)
+            except ValueError as e:
                 with status_output:
                     clear_output()
-                    print(f"Provider '{provider_id}' deleted successfully.")
-                # Update models in other tabs
-                available_models_dict.update(config_manager.get_available_models())
-                update_model_options()
-                update_profile_model_options()
-            except Exception as e:
-                with status_output:
-                    clear_output()
-                    print(f"Error deleting provider: {str(e)}")
+                    print(str(e))
+                return
+            config_manager.add_custom_provider(provider_name, display_name, models, init_code)
+            # Update UI
+            custom_provider_dropdown.options = list(custom_providers.keys())
+            custom_provider_dropdown.value = provider_name
+            with status_output:
+                clear_output()
+                print(f"Provider '{provider_name}' saved successfully.")
+
+        def on_delete_provider_clicked(button):
+            """Handle deleting a custom provider"""
+            provider_name = custom_provider_dropdown.value
+            if not provider_name:
+                return
+            config_manager.remove_custom_provider(provider_name)
+            # Update UI
+            custom_provider_dropdown.options = list(custom_providers.keys())
+            provider_name_input.value = ''
+            display_name_input.value = ''
+            models_input.value = ''
+            initialization_code_input.value = ''
+            with status_output:
+                clear_output()
+                print(f"Provider '{provider_name}' deleted successfully.")
 
         # Check if setup should be skipped
         if not force_display and config_manager.get_config_value('SKIP_SETUP_POPUP', False):
@@ -1176,7 +594,8 @@ def setup_jupyter_whisper(force_display=False):
         accordion = widgets.Accordion()
         main_container = widgets.VBox()
 
-        # Style for the UI
+        # Style for the UI remains unchanged...
+
         display(HTML("""
         <style>
             .widget-label { font-weight: bold; }
@@ -1217,25 +636,17 @@ def setup_jupyter_whisper(force_display=False):
         model_tab = widgets.VBox()
         system_prompt_tab = widgets.VBox()
         quick_edit_tab = widgets.VBox()
-        custom_providers_tab = widgets.VBox()  # New tab
+        advanced_settings_tab = widgets.VBox()  # Renamed from custom_providers_tab
 
-        # API Keys Section
+        # API Keys Section remains unchanged...
+
         keys = {
             'OPENAI_API_KEY': {
                 'display': 'OpenAI API Key (for audio transcription)',
                 'validate': lambda x: x.startswith('sk-') and len(x) > 20,
                 'widget': None
             },
-            'ANTHROPIC_API_KEY': {
-                'display': 'Anthropic API Key (for Claude)',
-                'validate': lambda x: x.startswith(('sk-', 'ant-')) and len(x) > 20,
-                'widget': None
-            },
-            'PERPLEXITY_API_KEY': {
-                'display': 'Perplexity API Key (for online search)',
-                'validate': lambda x: x.startswith('pplx-') and len(x) > 20,
-                'widget': None
-            }
+            # Include API keys for custom providers
         }
 
         # Include API keys for custom providers
@@ -1269,20 +680,21 @@ def setup_jupyter_whisper(force_display=False):
 
         api_keys_tab.children = api_key_widgets
 
-        # Model Selection Section
+        # **Model Selection Section**
         current_model, current_provider = config_manager.get_model()
 
-        # Create provider dropdown
-        provider_options = list(available_models_dict.keys())
+        # Create provider dropdown with only custom providers
+        provider_options = list(custom_providers.keys())
         provider_dropdown = widgets.Dropdown(
             options=provider_options,
-            value=current_provider,  # Set current provider as default
+            value=current_provider,
             description='Provider:',
             style={'description_width': 'initial'},
             layout=widgets.Layout(width='50%')
         )
 
         # Create model dropdown
+        available_models_dict = config_manager.get_available_models()
         model_dropdown = widgets.Dropdown(
             description='Model:',
             style={'description_width': 'initial'},
@@ -1293,7 +705,8 @@ def setup_jupyter_whisper(force_display=False):
         update_model_options()
 
         # Link provider changes to model updates
-        provider_dropdown.observe(update_model_options, names='value')
+        provider_dropdown.observe(on_provider_changed, names='value')
+        model_dropdown.observe(on_model_changed, names='value')
 
         # Assemble model tab
         model_tab.children = [
@@ -1303,7 +716,8 @@ def setup_jupyter_whisper(force_display=False):
             widgets.HTML('<div class="key-status">Select the provider and model to use for chat interactions.</div>')
         ]
 
-        # System Prompt Section
+        # **System Prompt Section**
+
         system_prompt = widgets.Textarea(
             value=config_manager.get_system_prompt(),
             placeholder='Enter system prompt...',
@@ -1322,7 +736,7 @@ def setup_jupyter_whisper(force_display=False):
             widgets.HTML('<div class="key-status">Customize the system prompt that defines the assistant\'s behavior.</div>')
         ]
 
-        # Quick Edit Profiles Section
+        # **Quick Edit Profiles Section**
 
         # Profile selection buttons container
         profile_buttons_container = widgets.HBox(
@@ -1379,7 +793,7 @@ def setup_jupyter_whisper(force_display=False):
 
         # Load the active profile's provider and model
         profile_data = profiles[active_profile]
-        profile_provider = profile_data.get('provider', 'anthropic')  # Default to 'anthropic' if not set
+        profile_provider = profile_data.get('provider', provider_options[0])  # Default to first provider if not set
         profile_model = profile_data['model']
 
         # Ensure the provider is valid
@@ -1423,66 +837,65 @@ def setup_jupyter_whisper(force_display=False):
             widgets.HTML('<div class="key-status">Configure how the AI processes your selected text when using Ctrl+Shift+A.</div>')
         ]
 
-        # Custom Providers Section
-
-        # Provider selection dropdown
-        provider_options = [(p['name'], name) for name, p in custom_providers.items()]
-        if not provider_options:
-            provider_options = [("No providers available", None)]
+        # **Advanced Settings Tab (formerly Custom Providers)**
+        # Widgets for custom providers
         custom_provider_dropdown = widgets.Dropdown(
-            options=provider_options,
+            options=list(custom_providers.keys()),
             description='Select Provider:',
             style={'description_width': 'initial'},
             layout=widgets.Layout(width='50%')
         )
 
-        # Input fields for custom provider
         provider_name_input = widgets.Text(
             description='Provider Name:',
             layout=widgets.Layout(width='50%')
         )
+
         display_name_input = widgets.Text(
             description='Display Name:',
             layout=widgets.Layout(width='50%')
         )
-        models_input = widgets.Textarea(
+
+        models_input = widgets.Text(
             description='Models (comma-separated):',
-            layout=widgets.Layout(width='95%', height='100px')
-        )
-        initialization_code_input = widgets.Textarea(
-            description='Initialization Code:',
-            layout=widgets.Layout(width='95%', height='300px')
+            layout=widgets.Layout(width='100%')
         )
 
-        # Provider management buttons
+        initialization_code_input = widgets.Textarea(
+            description='Initialization Code:',
+            layout=widgets.Layout(width='100%', height='300px')
+        )
+
         add_new_provider_button = widgets.Button(
-            description='Add New',
-            button_style='primary',
+            description='Add New Provider',
             icon='plus',
-            layout=widgets.Layout(margin='5px')
-        )
-        delete_provider_button = widgets.Button(
-            description='Delete',
-            button_style='danger',
-            icon='trash',
-            layout=widgets.Layout(margin='5px')
-        )
-        save_provider_button = widgets.Button(
-            description='Save',
             button_style='success',
+            layout=widgets.Layout(margin='5px')
+        )
+
+        save_provider_button = widgets.Button(
+            description='Save Provider',
             icon='save',
+            button_style='primary',
+            layout=widgets.Layout(margin='5px')
+        )
+
+        delete_provider_button = widgets.Button(
+            description='Delete Provider',
+            icon='trash',
+            button_style='danger',
             layout=widgets.Layout(margin='5px')
         )
 
         provider_buttons = widgets.HBox([
             add_new_provider_button,
-            delete_provider_button,
-            save_provider_button
+            save_provider_button,
+            delete_provider_button
         ])
 
-        # Assemble Custom Providers tab
-        custom_providers_tab.children = [
-            widgets.HTML('<div class="section-header">Custom Providers</div>'),
+        # Assemble advanced settings tab
+        advanced_settings_tab.children = [
+            widgets.HTML('<div class="section-header">Advanced Settings</div>'),
             custom_provider_dropdown,
             provider_buttons,
             provider_name_input,
@@ -1493,12 +906,12 @@ def setup_jupyter_whisper(force_display=False):
         ]
 
         # Update tab children and titles
-        tab.children = [api_keys_tab, model_tab, system_prompt_tab, quick_edit_tab, custom_providers_tab]
+        tab.children = [api_keys_tab, model_tab, system_prompt_tab, quick_edit_tab, advanced_settings_tab]
         tab.set_title(0, "API Keys")
         tab.set_title(1, "Model")
         tab.set_title(2, "System Prompt")
         tab.set_title(3, "Quick Edit")
-        tab.set_title(4, "Custom Providers")
+        tab.set_title(4, "Advanced Settings")
 
         # Create the main container with all widgets
         main_container.children = [
@@ -1537,50 +950,54 @@ def setup_jupyter_whisper(force_display=False):
         print(f"\nError during setup: {str(e)}")
         print("Please try again or report this issue if it persists.")
 
-
 # Call setup on import if needed
 setup_jupyter_whisper()
 
 def initialize_chat():
-    """Initialize chat based on configured provider"""
+    """Initialize chat based on configured provider and listen for changes."""
     global c
     config_manager = get_config_manager()
     model, provider = config_manager.get_model()
     system_prompt = config_manager.get_system_prompt()
+    history = c.h if c else []  # Preserve history if c exists
 
     try:
         # Get custom providers
         custom_providers = config_manager.get_custom_providers()
         
+        
+        # Check if current provider is custom
+
         # Check if current provider is custom
         if provider in custom_providers:
+            # Execute provider initialization code
             c = config_manager.execute_provider_initialization(
                 provider_name=provider,
                 model=model,
-                system_prompt=system_prompt
+                system_prompt=system_prompt,
+                history=history  # Pass existing history
             )
+
+            # Register callbacks to reinitialize chat when provider or model changes
+            def on_provider_change(new_provider):
+                initialize_chat()  # Reinitialize chat with new provider
+
+            def on_model_change(new_model):
+                initialize_chat()  # Reinitialize chat with new model
+
+            config_manager.register_change_callback('provider', on_provider_change)
+            config_manager.register_change_callback('model', on_model_change)
+
+            # Add Chat class to globals
             globals()['Chat'] = c.__class__
         else:
-            # Handle built-in providers
-            if provider == "anthropic":
-                from claudette import Chat
-            elif provider == "openai":
-                from cosette import Chat
-            elif provider == "xai":
-                raise NotImplementedError("XAI provider not yet implemented")
-            elif provider == "llama":
-                raise NotImplementedError("Llama provider not yet implemented")
-            else:
-                raise ValueError(f"Unknown provider: {provider}")
-            
-            globals()['Chat'] = Chat
-            c = Chat(model, sp=system_prompt)
+            raise ValueError(f"Provider '{provider}' is not recognized.")
 
         # Update the user namespace
         ip = get_ipython()
         ip.user_ns['c'] = c
-        ip.user_ns['Chat'] = globals()['Chat']
-        
+        ip.user_ns['Chat'] = c.__class__
+
         return c
 
     except Exception as e:
@@ -1592,3 +1009,4 @@ c = None
 
 # Initialize chat when module is loaded
 c = initialize_chat()
+
