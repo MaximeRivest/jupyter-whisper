@@ -368,12 +368,22 @@ async def shutdown_event():
 
 
 def inject_js():
-    # First, inject cleanup code
+    # Enhanced cleanup code
     cleanup_js = """
     if (window.cleanupAllHandlers) {
         window.cleanupAllHandlers();
         console.log('Cleaned up existing handlers');
     }
+    
+    // Ensure any existing popup is properly removed
+    if (window.streamingPopup && window.streamingPopup.hide) {
+        window.streamingPopup.hide();
+    }
+    
+    // Add delay before new handlers
+    setTimeout(() => {
+        // Your existing popup initialization code
+    }, 100);
     """
     display(Javascript(cleanup_js))
 
@@ -427,14 +437,37 @@ console.log('Using default voicerecorder.js content');
                 document.body.insertAdjacentHTML('beforeend', popupHtml);
             }
 
-            // Add streaming popup controls
+            // Add streaming popup controls with auto-scroll functionality
             window.streamingPopup = {
+                autoScroll: true,
+                
                 show: function() {
-                    document.getElementById('streaming-popup').style.display = 'block';
+                    const popup = document.getElementById('streaming-popup');
+                    const content = document.getElementById('streaming-content');
+                    
+                    popup.style.display = 'block';
+                    
+                    // Add scroll event listener to detect manual scrolling
+                    content.addEventListener('scroll', () => {
+                        const isScrolledToBottom = content.scrollHeight - content.clientHeight <= content.scrollTop + 1;
+                        this.autoScroll = isScrolledToBottom;
+                    });
                 },
+                
                 hide: function() {
                     document.getElementById('streaming-popup').style.display = 'none';
                     document.getElementById('streaming-content').textContent = '';
+                    this.autoScroll = true;  // Reset auto-scroll when hiding
+                },
+                
+                updateContent: function(text) {
+                    const content = document.getElementById('streaming-content');
+                    content.textContent = text;
+                    
+                    // Auto-scroll if enabled
+                    if (this.autoScroll) {
+                        content.scrollTop = content.scrollHeight;
+                    }
                 }
             };
 

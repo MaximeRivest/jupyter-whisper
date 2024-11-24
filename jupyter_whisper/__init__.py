@@ -1,5 +1,29 @@
 from IPython import get_ipython
 from .__version__ import __version__
+import ipywidgets as widgets
+from IPython.display import display
+# Add at the top of the file, after initial imports
+def show_loading_progress():
+    progress = widgets.FloatProgress(
+        value=0,
+        min=0,
+        max=100,
+        description='Loading Jupyter Whisper:',
+        bar_style='info',
+        style={'bar_color': '#2196F3'},
+        orientation='horizontal'
+    )
+    display(progress)
+    return progress
+
+# Initialize progress bar
+loading_progress = show_loading_progress()
+
+# After initial imports
+loading_progress.value = 20
+loading_progress.description = "Loading dependencies..."
+from IPython import get_ipython
+from .__version__ import __version__
 from .search import search_online
 from .config import get_config_manager
 from IPython.display import display
@@ -15,7 +39,15 @@ from .cell_outputs import simplify_markdown_from_history, extract_new_images
 from openai import OpenAI
 from collections import deque
 from IPython.display import Javascript
+import ipywidgets as widgets
 
+
+from .search import search_online
+from .config import get_config_manager
+
+# After config setup
+loading_progress.value = 40
+loading_progress.description = "Initializing configuration..."
 # Get model from config
 config_manager = get_config_manager()
 model = config_manager.get_model()
@@ -41,7 +73,9 @@ output_catcher = None  # Global variable to hold the OutputCatcher instance
 # Replace the simple list with a deque of fixed size
 captured_images = deque(maxlen=5)  # Will automatically maintain only the last 5 images
 
-
+# After server setup
+loading_progress.value = 60
+loading_progress.description = "Setting up server..."
 #----------------------------------------
 # For magic cells
 #----------------------------------------
@@ -50,14 +84,19 @@ def create_markdown_cell(content, app, count, c):
     markdown_content = f"%%assistant {len(c.h)-1}\n\n{content}\n"
     if count == 0:
         app.commands.execute('notebook:insert-cell-above')
+        app.commands.execute('notebook:scroll-cell-center')
     else:
         app.commands.execute('notebook:insert-cell-below')
+        app.commands.execute('notebook:scroll-cell-center')
+    time.sleep(0.1)
     app.commands.execute(
         'notebook:replace-selection', {'text': markdown_content})
+    time.sleep(0.1)
     app.commands.execute('notebook:change-cell-to-markdown')
+    time.sleep(0.1)
     app.commands.execute('notebook:run-cell')
-    time.sleep(0.4)
-    app.commands.execute('notebook:scroll-cell-center')
+    time.sleep(0.1)
+    
     
 def create_code_cell(code_content, code_lang, app, count, c):
     code_content = code_content.strip()
@@ -77,15 +116,19 @@ def create_code_cell(code_content, code_lang, app, count, c):
 
     if count == 0:
         app.commands.execute('notebook:insert-cell-above')
+        app.commands.execute('notebook:scroll-cell-center')
     else:
         app.commands.execute('notebook:insert-cell-below')
+        app.commands.execute('notebook:scroll-cell-center')
     app.commands.execute(
         'notebook:replace-selection', {'text': code_cell_content})
-    time.sleep(0.4)
+    time.sleep(0.1)
     app.commands.execute('notebook:scroll-cell-center')
 
 
 def go(cell):
+    # Ensure server is running before first chat
+    ensure_server()
     # Process expressions within {}
     pattern = r'\{([^}]+)\}'
 
@@ -124,6 +167,13 @@ def go(cell):
                                       '', 
                                       msg['content'], 
                                       flags=re.DOTALL)
+            elif isinstance(msg['content'], list):
+                for item in msg['content']:
+                    if isinstance(item, dict) and 'text' in item:
+                        item['text'] = re.sub(r'<cell_outputs>.*</cell_outputs>', 
+                                              '', 
+                                              item['text'], 
+                                              flags=re.DOTALL)
 
         # Prepare message content with new cell outputs for the current user message
         message_content = {
@@ -133,10 +183,116 @@ def go(cell):
 
         # Stream the assistant's response
         display(Javascript("window.streamingPopup.show();"))
-        clear_output(wait=True) 
+        clear_output(wait=True)
+        
+        # Add a small delay using time.sleep instead of async
+        time.sleep(0.1)
+                
+        def update_streaming_content(text):
+            safe_text = (text.replace('\\', '\\\\')
+                            .replace('\n', '\\n')
+                            .replace('\r', '\\r')
+                            .replace("'", "\\'")
+                            .replace('"', '\\"'))
+            
+            js_code = f"""
+                (function() {{
+                    if (window.streamingPopup) {{
+                        requestAnimationFrame(() => {{
+                            window.streamingPopup.updateContent('{safe_text}');
+                        }});
+                    }}
+                }})();
+            """
+            display(Javascript(js_code))
+            clear_output(wait=True)
+            # Add small delay to prevent race conditions
+            time.sleep(0.01)
+
+        def process_stream_content(buffer, all_word_pieces, in_code_block, code_block_lang, cell_count, app, c):
+            """
+            Process streaming content and create appropriate cells.
+            Args:
+                buffer: Current chunk being processed
+                all_word_pieces: Complete message received so far
+                in_code_block: Whether we're currently in a code block
+                code_block_lang: Current code block language if in a code block
+                cell_count: Current cell count
+                app: Jupyter app instance
+                c: Chat instance
+            Returns: (new_buffer, new_in_code_block, new_code_block_lang, new_cell_count)
+            """
+            while True:
+                if not in_code_block:
+                    code_block_start = buffer.find('```')
+                    if code_block_start != -1:
+                        # Check if we have enough content after ``` to determine the language
+                        remaining = buffer[code_block_start + 3:]
+                        if '\n' not in remaining:
+                            # Look ahead in all_word_pieces to see if we have more context
+                            full_remaining = all_word_pieces[len(all_word_pieces) - len(remaining):]
+                            if '\n' not in full_remaining:
+                                break
+                        
+                        markdown_content = buffer[:code_block_start].strip()
+                        if markdown_content:
+                            markdown_content = markdown_content.replace('`', '\\`')
+                            create_markdown_cell(markdown_content, app, cell_count, c)
+                            cell_count += 1
+                        elif markdown_content == '':
+                            create_markdown_cell('<br>', app, cell_count, c)
+                            cell_count += 1
+                        
+                        buffer = buffer[code_block_start + 3:]
+                        
+                        # Try to find language in complete message if not in buffer
+                        if '\n' not in buffer:
+                            full_content = all_word_pieces[len(all_word_pieces) - len(buffer):]
+                            lang_end = full_content.find('\n')
+                            if lang_end != -1:
+                                code_block_lang = full_content[:lang_end].strip()
+                                buffer = full_content[lang_end + 1:]
+                            else:
+                                code_block_lang = ''
+                        else:
+                            lang_end = buffer.find('\n')
+                            code_block_lang = buffer[:lang_end].strip()
+                            buffer = buffer[lang_end + 1:]
+                        
+                        in_code_block = True
+                    else:
+                        break
+                else:
+                    code_block_end = buffer.find('```')
+                    if code_block_end != -1:
+                        code_content = buffer[:code_block_end].strip()
+                        code_content = code_content.replace('`', '\\`')
+                        create_code_cell(code_content, code_block_lang, app, cell_count, c)
+                        cell_count += 1
+                        buffer = buffer[code_block_end + 3:]
+                        in_code_block = False
+                        code_block_lang = None
+                    else:
+                        # Look ahead in complete message for code block end
+                        remaining_content = all_word_pieces[len(all_word_pieces) - len(buffer):]
+                        if '```' in remaining_content:
+                            break  # Wait for more content as we know there's an end coming
+                        
+                        # If we're at the end of the message, handle incomplete code block
+                        if len(buffer.strip()) > 0 and buffer == all_word_pieces:
+                            code_content = buffer.strip()
+                            code_content = code_content.replace('`', '\\`')
+                            create_code_cell(code_content, code_block_lang, app, cell_count, c)
+                            cell_count += 1
+                            buffer = ""
+                            in_code_block = False
+                            code_block_lang = None
+                        break
+            
+            return buffer, in_code_block, code_block_lang, cell_count
+
         buffer = ""
         all_word_pieces = ""
-        
         for word_piece in c(
             message_content["text"],
             images=extract_new_images(output_manager.history),
@@ -149,74 +305,23 @@ def go(cell):
                 word = word_piece
             buffer += word
             all_word_pieces += word
-            # Check for code block markers in the buffer
-            while True:
-                if not in_code_block:
-                    code_block_start = buffer.find('```')
-                    if code_block_start != -1:
-                        # Check if we have enough content after ``` to determine the language
-                        remaining = buffer[code_block_start + 3:]
-                        if '\n' not in remaining:
-                            # Not enough content yet, wait for more
-                            break
-                       
-                        markdown_content = buffer[:code_block_start].strip()
-                        if markdown_content:
-                            # Escape backticks in markdown content
-                            markdown_content = markdown_content.replace('`', '\\`')
-                            create_markdown_cell(markdown_content, app, cell_count, c)
-                            cell_count += 1
-                        elif markdown_content == '':
-                            create_markdown_cell('<br>', app, cell_count, c)
-                            cell_count += 1
-                        
-                        # Extract everything after ```
-                        buffer = buffer[code_block_start + 3:]
-                        
-                        # Find the language - everything up to the first newline
-                        lang_end = buffer.find('\n')
-                        if lang_end != -1:
-                            code_block_lang = buffer[:lang_end].strip()
-                            buffer = buffer[lang_end + 1:]
-                        else:
-                            code_block_lang = ''
-                        in_code_block = True
-                    else:
-                        break
-                else:
-                    code_block_end = buffer.find('```')
-                    if code_block_end != -1:
-                        # Extract code content up to the end of the code block
-                        code_content = buffer[:code_block_end].strip()
-                        # Escape backticks within the code content
-                        code_content = code_content.replace('`', '\\`')
-                        create_code_cell(code_content, code_block_lang, app, cell_count, c)
-                        cell_count += 1
-                        buffer = buffer[code_block_end + 3:]
-                        in_code_block = False
-                        code_block_lang = None
-                    else:
-                        break
-
-
-            # Properly escape the text for JavaScript
-            safe_text = (all_word_pieces.replace('\\', '\\\\')
-                              .replace('\n', '\\n')
-                              .replace('\r', '\\r')
-                              .replace("'", "\\'")
-                              .replace('"', '\\"'))
             
-            js_code = f"""
-                (function() {{
-                    document.getElementById('streaming-content').textContent = '{safe_text}';
-                }})();
-            """
-            display(Javascript(js_code))
-            clear_output(wait=True) 
-            
-        # Hide the popup when done
-        display(Javascript("window.streamingPopup.hide();"))
-        clear_output(wait=True) 
+            # Process the buffer content with complete message context
+            buffer, in_code_block, code_block_lang, cell_count = process_stream_content(
+                buffer, all_word_pieces, in_code_block, code_block_lang, cell_count, app, c
+            )
+
+            # Update streaming content
+            update_streaming_content(all_word_pieces)
+
+        # Ensure all content is processed before hiding popup
+        time.sleep(3)
+        display(Javascript("""
+            requestAnimationFrame(() => {
+                window.streamingPopup.hide();
+            });
+        """))
+        clear_output(wait=True)
 
         # Handle any remaining content in the buffer after streaming completes
         if buffer.strip():
@@ -227,7 +332,7 @@ def go(cell):
                 create_markdown_cell(buffer.strip(), app, cell_count, c)
         # Create the next user cell
         app.commands.execute('notebook:insert-cell-below')
-        time.sleep(0.4)
+        time.sleep(0.1)
         app.commands.execute('notebook:replace-selection',
                              {'text': f"%%user {len(c.h)}\n\n"})
         app.commands.execute('notebook:scroll-cell-center')
@@ -244,6 +349,7 @@ def user(line, cell):
 
     if index == 0:
         c = initialize_chat()
+        c.h = []
         # Update c in user's namespace when reset
         get_ipython().user_ns['c'] = c
 
@@ -325,6 +431,9 @@ ip = get_ipython()
 #----------------------------------------
 # For providing cell outputs to the model
 #----------------------------------------
+# After output manager setup
+loading_progress.value = 80
+loading_progress.description = "Configuring outputs..."
 from .cell_outputs import JupyterOutputManager
 
 # Initialize the output manager and register hooks
@@ -345,7 +454,22 @@ inject_js()
 
 
 
+# 1. Lazy load the server components
+_server_loaded = False
+
+def ensure_server():
+    """Lazy load and initialize server components only when needed"""
+    global _server_loaded
+    if not _server_loaded:
+        from .server import start_server_if_needed, inject_js
+        start_server_if_needed()
+        inject_js()
+        _server_loaded = True
+
+# 2. Move server initialization out of main flow
 def setup_jupyter_whisper(force_display=False):
+    # Ensure server is running before showing setup UI
+    ensure_server()
     try:
         import ipywidgets as widgets
         from IPython.display import display, HTML, clear_output
@@ -953,8 +1077,10 @@ def setup_jupyter_whisper(force_display=False):
 # Call setup on import if needed
 setup_jupyter_whisper()
 
+# 3. Defer server initialization until first chat interaction
 def initialize_chat():
     """Initialize chat based on configured provider and listen for changes."""
+    ensure_server()  # Ensure server is running before chat initialization
     global c
     config_manager = get_config_manager()
     model, provider = config_manager.get_model()
@@ -1010,3 +1136,9 @@ c = None
 # Initialize chat when module is loaded
 c = initialize_chat()
 
+loading_progress.value = 100
+loading_progress.description = "Ready!"
+
+# Clean up
+time.sleep(0.5)
+loading_progress.close()

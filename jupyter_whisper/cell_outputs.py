@@ -84,34 +84,46 @@ class NotebookHistory:
     while controlling the size of stored data.
     """
 
-    def __init__(self, max_recent_outputs: int = 20):
+    def __init__(self):
         self.outputs: List[CellOutput] = []
-        self.max_recent_outputs = max_recent_outputs
+        self.config = get_config_manager()
+        self._update_history_limits()
+
+    def _update_history_limits(self):
+        """Update history limits from config"""
+        history_config = self.config.get_config_value('CELL_HISTORY_CONFIG', {
+            'KEEP_FIRST_N': 5,
+            'KEEP_RECENT_M': 15
+        })
+        self.keep_first_n = history_config['KEEP_FIRST_N']
+        self.keep_recent_m = history_config['KEEP_RECENT_M']
 
     def add_output(self, output: CellOutput):
         """
-        Add output to history, filtering out internal commands
+        Add output to history, maintaining size limits by keeping
+        first N and most recent M outputs.
         """            
         self.outputs.append(output)
-        if len(self.outputs) > self.max_recent_outputs:
-            self._summarize_old_outputs()
+        self._update_history_limits()
+        
+        # If we have more outputs than our total limit
+        total_limit = self.keep_first_n + self.keep_recent_m
+        if len(self.outputs) > total_limit:
+            # Keep first N and last M outputs
+            self.outputs = (
+                self.outputs[:self.keep_first_n] +  # Keep first N
+                self.outputs[-(self.keep_recent_m):]  # Keep last M
+            )
 
-    def get_context(self, num_recent: int = 5) -> List[Dict]:
+    def get_context(self, num_recent: int = None) -> List[Dict]:
         """
-        Retrieves the most recent cell outputs for AI context.
+        Retrieves cell outputs for AI context.
+        If num_recent is specified, returns only that many recent outputs.
+        Otherwise, returns all kept outputs (first N + recent M).
         """
-        recent_outputs = self.outputs[-num_recent:]
-        return [output.to_context_dict() for output in recent_outputs]
-
-    def _summarize_old_outputs(self):
-        """
-        Summarizes older outputs to maintain a reasonable context size.
-        This could involve discarding less important outputs or summarizing
-        their content.
-        """
-        # Placeholder for summarization logic
-        # For now, we simply discard the oldest output
-        self.outputs.pop(0)
+        if num_recent is not None:
+            return [output.to_context_dict() for output in self.outputs[-num_recent:]]
+        return [output.to_context_dict() for output in self.outputs]
 
 class JupyterOutputManager:
     """

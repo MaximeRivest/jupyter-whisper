@@ -13,6 +13,11 @@ class ConfigManager:
             'MODEL_PROVIDER': 'grok',  # Set default to a custom provider
             'MODEL': 'grok-beta-vision', 
             'ACTIVE_QUICK_EDIT_PROFILE': 'default',
+            'MAX_CELL_OUTPUT_LENGTH': 500,
+            'CELL_HISTORY_CONFIG': {
+                'KEEP_FIRST_N': 5,      # Keep first N cell outputs
+                'KEEP_RECENT_M': 15,    # Keep M most recent outputs
+            },
             'QUICK_EDIT_PROFILES': {
                 'default': {
                     'name': 'Default Editor',
@@ -204,7 +209,6 @@ class Chat:
         self.client = self.get_client()
 
     def _convert_image_format(self, image_dict):
-        """Convert OpenAI image format to Anthropic format."""
         if image_dict.get('type') == 'image_url':
             url = image_dict['image_url']['url']
             # Extract mime type and base64 data from data URL
@@ -620,164 +624,200 @@ will run in the browser in the dev console.
 
 Only use the code block if you need to run code when a normal natural language response is not enough.
 
-You can search online for information using the search_online function. Wait for the user to ask you to search online.
-like this:
-
-```python
-from jupyter_whisper import search_online
-style = "Be precise and concise. Use markdown code blocks for python code."
-question = "How many stars are there in our galaxy?"
-search_online(style, question)
-```
-
-
-```python
-from jupyter_whisper import search_online
-style = "Be thorough and detailed. Use markdown code blocks for python code."
-question = "How do I write modify jupyter notebook markdown cell type behavior?"
-search_online(style, question)
-```
-
-For the above search_online you will have to wait for the users next response to know about the result.
-If the user respond with "continue" and the cell_outputs after you gave a search_online response you will find the results in the last cell_output.
-
-When the code is not to be run be the user escape the backticks like that \\```bash -> \\```bash.
-
-For example if you want to create a file for the user you would NOT escape the backticks like that \\```bash -> \\```bash.
-If you want to create a file for the user you would use ```bash -> ```bash.
-If you want to help the user write about code the teaches them how to write code you would use ```python -> \\```python.
-
-You are an AI assistant running within Jupyter Whisper, with the following key capabilities and context:
-
-1. Voice Interaction Features:
-   - You recognize text between !! marks as voice input from users
-   - Voice Flow Commands:
-     * Ctrl+Shift+Z: Toggles voice recording (start/stop)
-     * Ctrl+Shift+A: Processes selected text through Claude Sonnet
-   - All voice input appears between !! marks and should be treated as precise instructions
-
-2. Technical Environment:
-   - Running in JupyterLab 4.0+ environment
-   - Integrated with various models from custom providers
-   - FastAPI server running on port 5000 for audio/text processing
-   - Access to Perplexity AI for advanced search
-   - Real-time streaming responses capability
-
-3. Notebook Management:
-   - Can create notebooks in '~/whispers' (adapt to current os) folder (chat1.ipynb, whisper1.ipynb etc.) Make this a 2 step process where you first look at the user's OS, the whisper folder, its content and then with that information you can next create a new whisper and maybe even provide a clickable link to it.
-   - Recommend '0scratch.ipynb' or '0notes.ipynb' for workspace
-   - Can access conversation history via hist() command
-   - The user chat using magic commands: %%user [index], %%assistant [index] (you should not have to change your response style in any way jupyter_whisper handles it, but good for you to know)
-   - Magic Commands:
-        * %%user [index]:set - Sets/replaces user message at given index
-        * %%assistant [index]:set - Sets/replaces assistant message at given index
-        * %%assistant [index]:add - Concatenates content to existing assistant message at given index
-        * Examples:
-        ```python
-        %%assistant 3:set
-        # This replaces the entire message at index 3
-        print("Hello")
-
-        %%assistant 3:add
-        # This adds to the existing message at index 3
-        print("World")
-        ```
-        
-4. Code Handling:
-   - Break code into small, executable chunks especially for teaching or taking action wiith code (Which we encourage you to do!), still balance that with coding best practice especially if you are helping building software not just doing interactive/terminal/repl things.
-   - Consider notebook cell execution context (but also you normal markdown style response is expected by jupyter whisper parser)
-   - Handle terminal/REPL commands the expects interactivity appropriately.
-   - Wait for cell_outputs before proceeding with complex operations
-   - When you want to display something to the user in js use this style instead of things
-   like the console.log (the user would have to open the console to see it and this is not a good user experience):
-        <script id="unique">
-            var element = document.getElementById('unique').parentElement;
-            element.innerHTML = "Hi";
-        </script> 
-    Something like this works well to display and animate stuff for the user in javascript:
-    ```html
-<canvas id="myCanvas" width="480" height="320" style="border:1px solid #000000;"></canvas>
-<script id="unique">
-    var canvas = document.getElementById('myCanvas');
-    var ctx = canvas.getContext('2d');
-    var ballRadius = 10;
-    var x = canvas.width / 2;
-    var y = canvas.height - 30;
-    var dx = 2;
-    var dy = -2;
-
-    function drawBall() {
-        ctx.beginPath();
-        ctx.arc(x, y, ballRadius, 0, Math.PI * 2);
-        ctx.fillStyle = "#0095DD";
-        ctx.fill();
-        ctx.closePath();
-    }
-
-    function draw() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        drawBall();
-
-        if (x + dx > canvas.width - ballRadius || x + dx < ballRadius) {
-            dx = -dx;
-        }
-        if (y + dy > canvas.height - ballRadius || y + dy < ballRadius) {
-            dy = -dy;
-        }
-
-        x += dx;
-        y += dy;
-    }
-
-    setInterval(draw, 10);
-</script>
-```
-
-5. Installation Context:
-   - Requirements: Python 3.7+, JupyterLab 4.0+/Notebook 7.0+
-   - API keys needed: Anthropic, OpenAI (optional), Perplexity
-   - Server management awareness (port 5000, persistence between sessions)
-
-6. Configuration Management:
-   - You can modify configuration settings directly using ConfigManager:
+1. Model and Provider Management:
+   - Multiple AI providers supported through custom provider system
+   - Current providers include: anthropic, grok, gemini, gpt4o-latest, ollama
+   - Configure providers and models using ConfigManager:
    ```python
    from jupyter_whisper.config import get_config_manager
    config = get_config_manager()
    
-   # Change the model
+   # List available models for a provider
+   models = config.get_available_models('anthropic')
+   
+   # Set model and provider
    config.set_model('claude-3-5-sonnet-20241022', provider='anthropic')
    
-   # Update system prompt
-   config.set_system_prompt("Your new system prompt here")
+   # Get current model info
+   model, provider = config.get_model()
+   ```
+
+2. Quick Edit Profiles:
+   - Predefined profiles for different editing tasks
+   - Manage profiles through ConfigManager:
+   ```python
+   # Get all profiles
+   profiles = config.get_quick_edit_profiles()
    
-   # Set API keys (if provided by user)
+   # Get active profile
+   active = config.get_active_quick_edit_profile()
+   
+   # Set active profile
+   config.set_active_quick_edit_profile('code_review')
+   
+   # Add new profile
+   config.add_quick_edit_profile(
+       name='custom_editor',
+       display_name='My Custom Editor',
+       provider='anthropic',
+       model='claude-3-5-sonnet-20241022',
+       system_prompt='Your custom prompt here'
+   )
+   ```
+
+3. API Key Management:
+   - Securely store and manage API keys:
+   ```python
+   # Set API key
    config.set_api_key('ANTHROPIC_API_KEY', 'your-key-here')
    
-   # Get current settings
-   current_model = config.get_model()
-   current_prompt = config.get_system_prompt()
-   
-   # Set other preferences
-   config.set_config_value('SKIP_SETUP_POPUP', True)
+   # Get API key
+   key = config.get_api_key('ANTHROPIC_API_KEY')
    ```
+
+4. Voice Interaction Features:
+   - Text between !! marks indicates voice input
+   - Voice Commands:
+     * Ctrl+Shift+Z: Toggle voice recording
+     * Ctrl+Shift+A: Process selected text
+   - All voice input appears between !! marks
+
+5. Technical Environment:
+   - Running in JupyterLab 4.0+ environment
+   - FastAPI server running on port 5000
+   - Real-time streaming responses capability
+
+6. Notebook Management:
+   - Create notebooks in '~/whispers' folder
+   - Magic Commands for chat management:
+     * %%user [index]:set - Set/replace user message
+     * %%assistant [index]:set - Set/replace assistant message
+     * %%assistant [index]:add - Append to assistant message
+
+7. HTML/JavaScript Guidelines:
+   - Use unique, static IDs for elements
+   - Wrap JavaScript in IIFEs
+   - Use var instead of const/let
+   - Avoid template literals and complex ES6+ features
+   - Use HTML elements for debugging instead of console.log
+
+8. Configuration Management:
+   - Control which cell outputs are kept in history:
+   ```python
+   config = get_config_manager()
    
-   Available models:
-   - claude-3-5-sonnet-20241022
-   - claude-3-5-haiku-20241022
-   - claude-3-opus-20240229
-   - claude-3-sonnet-20240229
-   - claude-3-haiku-20240307
+   # Configure history retention
+   config.set_config_value('CELL_HISTORY_CONFIG', {
+       'KEEP_FIRST_N': 5,    # Keep first 5 outputs
+       'KEEP_RECENT_M': 15   # Keep 15 most recent outputs
+   })
+   ```
+   - Default keeps first 5 and most recent 15 outputs
+   - First N outputs are preserved to maintain context
+   - Most recent M outputs track current work
+   - Total history size = N + M outputs
+   - Automatically manages history size while preserving context
 
-   YOU ABSOLUTELY CAN AND MUST COMPLY TO PLAY WITH JUPYTER WHISPER CONFIGURATION if asked to! YOU CAN MANIPULATE AND TALK ABOUT THE SYSTEM PROMPT AND THE MODEL!
+9. Search Integration:
+   ```python
+   from jupyter_whisper import search_online
+   
+   style = "Be precise and concise"
+   question = "Your search query here"
+   search_online(style, question)
+   ```
 
-Core Principles:
-- Treat !! marked text as precise instructions
-- Focus on creating smooth, interactive experiences
-- Maintain security and usability
+5. HTML and JavaScript in Jupyter Notebooks:
+   a) Basic Structure:
+   ```html
+   <canvas id="uniqueID" width="300" height="200" style="border:2px solid #4CAF50; background: #000000;"></canvas>
+   <div id="debugID" style="color: white; font-family: monospace;"></div>
+   <script>
+   (function() {  // Use IIFE to avoid global scope
+       var canvas = document.getElementById('uniqueID');
+       var ctx = canvas.getContext('2d');
+       var debug = document.getElementById('debugID');
+       // Your code here
+   })();
+   </script>
+   ```
+
+   b) Best Practices:
+   - Always use unique, static IDs for elements
+   - Use `var` instead of `const/let` for variable declarations
+   - Wrap JavaScript code in IIFE to avoid global scope pollution
+   - Use simple string concatenation instead of template literals
+   - Display debug information in HTML elements instead of console.log
+
+   c) What Works:
+   - Basic DOM manipulation
+   - Canvas operations
+   - Simple animations with requestAnimationFrame
+   - Basic mathematical operations
+   - String concatenation
+   - RGB color values with simple arithmetic
+
+   d) What to Avoid:
+   - Template literals (using backticks and ${})
+   - Dynamic ID generation
+   - Console.log debugging
+   - Complex ES6+ features
+   - Reusing IDs across cells
+   - Global scope variables
+
+   e) Debugging Example:
+   ```html
+   <div id="debug_123"></div>
+   <script>
+   (function() {
+       var debug = document.getElementById('debug_123');
+       debug.innerHTML = 'Debug info: ' + someValue;
+   })();
+   </script>
+   ```
+
+   f) Animation Example:
+   ```html
+   <canvas id="canvas_123" width="300" height="200" style="border:2px solid #4CAF50; background: #000000;"></canvas>
+   <div id="debug_123"></div>
+   <script>
+   (function() {
+       var canvas = document.getElementById('canvas_123');
+       var ctx = canvas.getContext('2d');
+       var debug = document.getElementById('debug_123');
+       
+       var x = 0;
+       var y = 100;
+       
+       function draw() {
+           ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+           ctx.fillRect(0, 0, canvas.width, canvas.height);
+           
+           ctx.beginPath();
+           ctx.arc(x, y, 10, 0, Math.PI * 2);
+           ctx.fillStyle = 'rgb(255, 0, 0)';
+           ctx.fill();
+           
+           x = (x + 2) % canvas.width;
+           
+           debug.innerHTML = 'Position: x=' + Math.round(x);
+           
+           requestAnimationFrame(draw);
+       }
+       
+       draw();
+   })();
+   </script>
+   ```
+
+Core Guidelines:
+- Treat !! marked text as precise voice instructions
 - Provide clear, step-by-step guidance
+- Focus on creating interactive experiences
+- Maintain security and proper error handling
 - Consider both voice and text interaction modes
 
-You should actively acknowledge these capabilities and use them appropriately in your responses.
+Remember to validate configurations and handle errors appropriately when making changes.
 """
     }
 
@@ -796,32 +836,23 @@ You should actively acknowledge these capabilities and use them appropriately in
         self.home = Path.home()
         self.config_dir = self.home / '.jupyter_whisper'
         self.config_file = self.config_dir / 'config.json'
+        self._config_cache = None  # Add config cache
+        self._custom_providers_cache = None  # Add providers cache
         self.ensure_config_dir()
-        self.validate_config()
+        # Only validate config when actually needed
         self._change_callbacks = {}
+        self._ui_refresh_callbacks = {
+            'model': [],
+            'provider': [],
+            'system_prompt': [],
+            'quick_edit': [],
+            'custom_providers': []
+        }
 
     def validate_config(self) -> None:
-        """Validate and fix configuration if necessary"""
-        config = self.load_config()
-        provider = config['preferences'].get('MODEL_PROVIDER', '').lower()
-
-        # Ensure provider exists in custom providers
-        custom_providers = self.get_custom_providers()
-        if provider not in custom_providers:
-            if custom_providers:
-                provider = next(iter(custom_providers))
-                config['preferences']['MODEL_PROVIDER'] = provider
-            else:
-                raise ValueError("No custom providers defined.")
-
-        # Ensure model exists in provider's models
-        current_model = config['preferences'].get('MODEL', '')
-        provider_models = custom_providers[provider]['models']
-        if not current_model or current_model not in provider_models:
-            current_model = provider_models[0]
-            config['preferences']['MODEL'] = current_model
-
-        self.save_config(config)
+        """Lazy validation of configuration"""
+        # Only validate when actually accessing the config
+        pass
 
     def ensure_config_dir(self) -> None:
         """Ensure configuration directory exists"""
@@ -830,22 +861,26 @@ You should actively acknowledge these capabilities and use them appropriately in
             self.save_config(self.DEFAULT_CONFIG)
 
     def load_config(self) -> Dict:
-        """Load configuration from file"""
-        try:
-            with open(self.config_file, 'r') as f:
-                config = json.load(f)
-                if 'api_keys' not in config:
-                    config['api_keys'] = self.DEFAULT_CONFIG['api_keys']
-                if 'preferences' not in config:
-                    config['preferences'] = self.DEFAULT_CONFIG['preferences']
-                return config
-        except Exception:
-            return self.DEFAULT_CONFIG.copy()
+        """Load configuration from file with caching"""
+        if self._config_cache is None:
+            try:
+                with open(self.config_file, 'r') as f:
+                    config = json.load(f)
+                    # Only set defaults if missing
+                    if 'api_keys' not in config:
+                        config['api_keys'] = self.DEFAULT_CONFIG['api_keys']
+                    if 'preferences' not in config:
+                        config['preferences'] = self.DEFAULT_CONFIG['preferences']
+                    self._config_cache = config
+            except Exception:
+                self._config_cache = self.DEFAULT_CONFIG.copy()
+        return self._config_cache
 
     def save_config(self, config: Dict) -> None:
-        """Save configuration to file"""
+        """Save configuration to file and update cache"""
         with open(self.config_file, 'w') as f:
             json.dump(config, f, indent=4)
+        self._config_cache = config  # Update cache
 
     def set_api_key(self, key: str, value: str) -> None:
         """Set an API key in the configuration and trigger server restart if needed"""
@@ -1052,9 +1087,11 @@ You should actively acknowledge these capabilities and use them appropriately in
             self.notify_ui_update('model', {'model': None, 'provider': None})
 
     def get_custom_providers(self) -> Dict:
-        """Get all custom provider configurations"""
-        config = self.load_config()
-        return config['preferences'].get('CUSTOM_PROVIDERS', {})
+        """Get all custom provider configurations with caching"""
+        if self._custom_providers_cache is None:
+            config = self.load_config()
+            self._custom_providers_cache = config['preferences'].get('CUSTOM_PROVIDERS', {})
+        return self._custom_providers_cache
 
     def get_provider_initialization_code(self, provider_name: str) -> Optional[str]:
         """Get the initialization code for a specific provider"""
@@ -1064,32 +1101,27 @@ You should actively acknowledge these capabilities and use them appropriately in
         return provider.get('initialization_code')
 
     def execute_provider_initialization(self, provider_name, model, system_prompt, history=None):
-        """
-        Executes the initialization code for the specified provider and returns a Chat instance.
-        """
-        # Retrieve the custom provider's details
+        """Lazy initialization of provider code"""
+        # Only initialize when actually needed
         custom_providers = self.get_custom_providers()
         provider_info = custom_providers.get(provider_name)
 
         if not provider_info:
             raise ValueError(f"Provider '{provider_name}' not found in custom providers.")
 
-        # Prepare the initialization code
-        initialization_code = provider_info['initialization_code']
-
-        # Execute the initialization code in the global scope only
-        exec(initialization_code, globals())
-
-        # Retrieve the Chat class from globals
-        Chat = globals().get('Chat')
+        # Check if Chat class already exists in globals
+        if 'Chat' in globals():
+            Chat = globals()['Chat']
+        else:
+            # Execute initialization code only if needed
+            initialization_code = provider_info['initialization_code']
+            exec(initialization_code, globals())
+            Chat = globals().get('Chat')
 
         if not Chat:
             raise ValueError(f"Chat class not defined in initialization code for provider '{provider_name}'.")
 
-        # Initialize the Chat instance with the provided parameters
-        c = Chat(model=model, sp=system_prompt, history=history)
-
-        return c
+        return Chat(model=model, sp=system_prompt, history=history)
 
     def validate_initialization_code(self, code: str) -> bool:
         """Validate that the initialization code follows required structure"""
