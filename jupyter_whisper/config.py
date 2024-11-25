@@ -13,16 +13,16 @@ class ConfigManager:
             'MODEL_PROVIDER': 'grok',  # Set default to a custom provider
             'MODEL': 'grok-beta-vision', 
             'ACTIVE_QUICK_EDIT_PROFILE': 'default',
-            'MAX_CELL_OUTPUT_LENGTH': 500,
+            'MAX_CELL_OUTPUT_LENGTH': 2000,
             'CELL_HISTORY_CONFIG': {
-                'KEEP_FIRST_N': 5,      # Keep first N cell outputs
-                'KEEP_RECENT_M': 15,    # Keep M most recent outputs
+                'KEEP_FIRST_N': 2,      # Keep first N cell outputs
+                'KEEP_RECENT_M': 4,    # Keep M most recent outputs
             },
             'QUICK_EDIT_PROFILES': {
                 'default': {
                     'name': 'Default Editor',
-                    'provider': 'grok',
-                    'model': 'grok-beta',
+                    'provider': 'anthropic',
+                    'model': 'claude-3-5-sonnet-20241022',
                     'system_prompt': """
 You are a precise text and code editor. Your task is to:
 
@@ -40,8 +40,8 @@ Rules:
                 },
                 'code_review': {
                     'name': 'Code Reviewer',
-                    'provider': 'grok',
-                    'model': 'grok-beta',
+                    'provider': 'anthropic',
+                    'model': 'claude-3-5-sonnet-20241022',
                     'system_prompt': """
 You are a thorough code reviewer. Your task is to:
 
@@ -57,8 +57,8 @@ Rules:
                 },
                 'documentation': {
                     'name': 'Documentation Helper',
-                    'provider': 'grok',
-                    'model': 'grok-beta',
+                    'provider': 'anthropic',
+                    'model': 'claude-3-5-sonnet-20241022',
                     'system_prompt': """
 You are a documentation specialist. Your task is to:
 
@@ -298,7 +298,10 @@ class Chat:
                 "GEMINI": {
                     "name": "GEMINI",
                     "models": [
-                        "gemini-1.5-pro-002"
+                        "gemini-1.5-pro-002",
+                        "gemini-1.5-flash",
+                        "gemini-1.5-flash-8b",
+                        "gemini-exp-1121"
                     ],
                     "initialization_code": """
 import os
@@ -335,7 +338,6 @@ class Chat:
         self.api_key = self.get_api_key()
         self.client = self.get_client()
 
-
     def __call__(self, 
                  message: str, 
                  max_tokens: int = 4096, 
@@ -345,31 +347,22 @@ class Chat:
         try:
             # Handle message content based on whether images are present
             if images:
-                # Combine all images and message into a single text content
-                image_texts = []
-                for img in images:
-                    if img.get('type') == 'image_url':
-                        image_url = img['image_url']['url']
-                        image_texts.append(f"<image>{image_url}</image>")
-                
-                content = {
-                    "type": "text",
-                    "text": f"{' '.join(image_texts)}\n{message}"
-                }
-            else:
-                content = {
+                images.append(  {
                     "type": "text",
                     "text": message
-                }
+                })
+                content = images
+            else:
+                content = message
             
             # Add user message to history
             self.h.append({"role": "user", "content": content})
             
-            # Get response from Gemini API
+            # Get response from x.ai
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": {"type": "text", "text": self.sp}},
+                    {"role": "system", "content": self.sp},
                     *self.h
                 ],
                 max_tokens=max_tokens,
@@ -398,14 +391,15 @@ class Chat:
                 self.h.append({"role": "assistant", "content": assistant_message})
                 return assistant_message 
         except Exception as e:
-            print(f"Error in chat: {e}")
+            print("Error in chat: {}".format(e))
             raise
 """
                 },
                 "gpt4o-latest": {
                     "name": "gpt4o-latest",
                     "models": [
-                        "gpt-4o"
+                        "gpt-4o",
+                        "gpt-4o-mini"
                     ],
                     "initialization_code": """
 import os
@@ -424,9 +418,9 @@ class Chat:
 
     def get_api_key(self):
         config = get_config_manager()
-        api_key = config.get_api_key('GPT4O_LATEST_API_KEY')
+        api_key = config.get_api_key('OPENAI_API_KEY')
         if not api_key:
-            raise ValueError("GPT4O_LATEST_API_KEY not found in configuration")
+            raise ValueError("OPENAI_API_KEY not found in configuration")
         return api_key
 
     def get_client(self):
@@ -441,7 +435,6 @@ class Chat:
         self.api_key = self.get_api_key()
         self.client = self.get_client()
 
-
     def __call__(self, 
                  message: str, 
                  max_tokens: int = 4096, 
@@ -451,31 +444,22 @@ class Chat:
         try:
             # Handle message content based on whether images are present
             if images:
-                # Combine all images and message into a single text content
-                image_texts = []
-                for img in images:
-                    if img.get('type') == 'image_url':
-                        image_url = img['image_url']['url']
-                        image_texts.append(f"<image>{image_url}</image>")
-                
-                content = {
-                    "type": "text",
-                    "text": f"{' '.join(image_texts)}\n{message}"
-                }
-            else:
-                content = {
+                images.append(  {
                     "type": "text",
                     "text": message
-                }
+                })
+                content = images
+            else:
+                content = message
             
             # Add user message to history
             self.h.append({"role": "user", "content": content})
             
-            # Get response from GPT-4o API
+            # Get response from x.ai
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": {"type": "text", "text": self.sp}},
+                    {"role": "system", "content": self.sp},
                     *self.h
                 ],
                 max_tokens=max_tokens,
@@ -504,110 +488,7 @@ class Chat:
                 self.h.append({"role": "assistant", "content": assistant_message})
                 return assistant_message 
         except Exception as e:
-            print(f"Error in chat: {e}")
-            raise
-"""
-                },
-                "ollama": {
-                    "name": "ollama",
-                    "models": [
-                        "llama2b"
-                    ],
-                    "initialization_code": """
-import os
-from typing import Optional, List, Generator, Union
-from openai import OpenAI
-from jupyter_whisper.config import get_config_manager
-
-
-class Chat:
-    def __init__(self, model: Optional[str] = None, sp: str = '', history: Optional[List[dict]] = None):
-        self.model = model or "llama2b"
-        self.sp = sp
-        self.api_key = self.get_api_key()
-        self.client = self.get_client()
-        self.h = history if history is not None else []
-
-    def get_api_key(self):
-        # Ollama may not require an API key; adjust if necessary
-        return None
-
-    def get_client(self):
-        return OpenAI(
-            api_key=self.api_key or 'ollama',  # Use 'ollama' as placeholder if no API key
-            base_url="http://localhost:11434/v1"
-        )
-
-    def update_model(self, model_info: dict):
-        self.model = model_info.get('model', self.model)
-
-    def update_api_key(self, api_keys: dict):
-        # API key may not change for Ollama
-        pass
-
-    def __call__(self, 
-                 message: str, 
-                 max_tokens: int = 4096, 
-                 stream: bool = True,
-                 temperature: float = 0,
-                 images: Optional[List[dict]] = None) -> Union[str, Generator[str, None, str]]:
-        try:
-            # Handle message content based on whether images are present
-            if images:
-                # Combine all images and message into a single text content
-                image_texts = []
-                for img in images:
-                    if img.get('type') == 'image_url':
-                        image_url = img['image_url']['url']
-                        image_texts.append(f"<image>{image_url}</image>")
-                
-                content = {
-                    "type": "text",
-                    "text": f"{' '.join(image_texts)}\n{message}"
-                }
-            else:
-                content = {
-                    "type": "text",
-                    "text": message
-                }
-            
-            # Add user message to history
-            self.h.append({"role": "user", "content": content})
-            
-            # Get response from Ollama API
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": {"type": "text", "text": self.sp}},
-                    *self.h
-                ],
-                max_tokens=max_tokens,
-                stream=stream,
-                temperature=temperature
-            )
-            
-            if stream:
-                full_response = ""
-                try:
-                    for chunk in response:
-                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:
-                            text = chunk.choices[0].delta.content
-                            full_response += text
-                            yield text
-                except Exception as e:
-                    print(f"Error during streaming: {e}")
-                    raise
-                finally:
-                    if full_response:
-                        self.h.append({"role": "assistant", "content": full_response})
-                    print()
-                return full_response
-            else:
-                assistant_message = response.choices[0].message.content
-                self.h.append({"role": "assistant", "content": assistant_message})
-                return assistant_message 
-        except Exception as e:
-            print(f"Error in chat: {e}")
+            print("Error in chat: {}".format(e))
             raise
 """
                 }
