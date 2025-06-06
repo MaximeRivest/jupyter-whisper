@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jupyter_whisper"
+dynamic = ["version"]
+authors = [
+  { name="Maxime Rivest", email="mrive052@gmail.com" },
+]
+description = "AI-Powered Chat Interface for Jupyter Notebooks"
+readme = "README.md"
+requires-python = ">=3.7"
+keywords = ["jupyter", "chat", "claude", "ai", "notebook", "assistant"]
+license = { text = "MIT License" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: Jupyter",
+    "Framework :: Jupyter :: JupyterLab",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "jupyterlab>=4.2.0",
+    "ipylab>=1.0.0",
+    "jupyter-server>=2.14.0",
+    "anthropic>=0.37.0",
+    "openai>=1.51.0",
+    "claudette",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.31.0",
+    "nest-asyncio>=1.6.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.2",
+    "requests>=2.32.0",
+    "python-multipart>=0.0.5",
+    "ipywidgets>=8.1.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/MaximeRivest/jupyter_whisper"
+"Bug Reports" = "https://github.com/MaximeRivest/jupyter_whisper/issues"
+"Source" = "https://github.com/MaximeRivest/jupyter_whisper"
+
+[tool.setuptools]
+packages = ["jupyter_whisper"]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "jupyter_whisper.__version__.__version__"}
+
+[tool.setuptools.package-data]
+jupyter_whisper = ["static/*.js"] 

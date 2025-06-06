@@ -298,6 +298,7 @@ class Chat:
                 "GEMINI": {
                     "name": "GEMINI",
                     "models": [
+                        "gemini-exp-1206",
                         "gemini-1.5-pro-002",
                         "gemini-1.5-flash",
                         "gemini-1.5-flash-8b",
@@ -608,7 +609,7 @@ Only use the code block if you need to run code when a normal natural language r
    search_online(style, question)
    ```
 
-5. HTML and JavaScript in Jupyter Notebooks:
+10. HTML and JavaScript in Jupyter Notebooks:
    a) Basic Structure:
    ```html
    <canvas id="uniqueID" width="300" height="200" style="border:2px solid #4CAF50; background: #000000;"></canvas>
@@ -690,6 +691,273 @@ Only use the code block if you need to run code when a normal natural language r
    })();
    </script>
    ```
+11. Data Analytics:
+
+If asked to do data analysis and the library are not specified, use DuckDB in python.
+
+DuckDB is a fast, in-memory SQL database that can handle large data sets and is easy to use.
+# DuckDB SQL Dialect Cheat Sheet
+
+## Overview
+
+- Based on PostgreSQL dialect.
+- Aims for close PostgreSQL compatibility but with some differences (e.g., order preservation by default).
+
+## Indexing
+
+- **1-based indexing** for strings, lists, etc.
+- **0-based indexing** for JSON objects.
+
+**Example (1-based):**
+
+```sql
+SELECT list[1] AS element
+FROM (SELECT ['first', 'second', 'third'] AS list);
+-- Output: 'first'
+```
+
+**Example (0-based):**
+
+```sql
+SELECT json[1] AS element
+FROM (SELECT '["first", "second", "third"]'::JSON AS json);
+-- Output: "second"
+```
+
+## Friendly SQL Features
+
+### Clauses
+
+- **`CREATE OR REPLACE TABLE`**: Avoids `DROP TABLE IF EXISTS`.
+- **`CREATE TABLE ... AS SELECT (CTAS)`**: Creates a table from a query's output.
+- **`INSERT INTO ... BY NAME`**: Inserts using column names instead of positions.
+- **`INSERT OR IGNORE INTO ...`**: Inserts rows, ignoring conflicts with `UNIQUE` or `PRIMARY KEY` constraints.
+- **`INSERT OR REPLACE INTO ...`**: Inserts rows, replacing existing rows on conflict.
+- **`DESCRIBE`**: Summarizes table or query schema.
+- **`SUMMARIZE`**: Provides summary statistics for a table or query.
+- **`FROM`-first syntax with optional `SELECT`**: `FROM tbl` is equivalent to `SELECT * FROM tbl`.
+- **`GROUP BY ALL`**: Infers group-by columns from the `SELECT` clause.
+- **`ORDER BY ALL`**: Orders by all columns.
+- **`SELECT * EXCLUDE`**: Excludes specific columns from `*`.
+- **`SELECT * REPLACE`**: Replaces specific columns in `*` with different expressions.
+- **`UNION BY NAME`**: Performs `UNION` based on column names.
+- **`PIVOT`**: Transforms long tables to wide tables.
+- **`UNPIVOT`**: Transforms wide tables to long tables.
+- **`SET VARIABLE`**: Defines SQL-level variables.
+- **`RESET VARIABLE`**: Resets SQL-level variables.
+
+### Query Features
+
+- Column aliases in `WHERE`, `GROUP BY`, and `HAVING` (but not in `JOIN`'s `ON` clause).
+- **`COLUMNS()` expression**:
+    - Executes the same expression on multiple columns.
+    - Supports regular expressions, `EXCLUDE`, `REPLACE`, and lambda functions.
+- Reusable column aliases (e.g., `SELECT i + 1 AS j, j + 2 AS k FROM range(0, 3) t(i)`).
+- Advanced aggregation:
+    - `FILTER` clause.
+    - `GROUPING SETS`, `GROUP BY CUBE`, `GROUP BY ROLLUP`.
+    - `count()` shorthand for `count(*)`.
+
+### Literals and Identifiers
+
+- Case-insensitive but preserves the case of entities in the catalog.
+- Deduplicates identifiers.
+- Underscores as digit separators in numeric literals (e.g., `1_000_000`).
+
+### Data Types
+
+- `MAP` data type.
+- `UNION` data type.
+
+### Data Import
+
+- Auto-detects headers and schema of CSV files.
+- Directly queries CSV and Parquet files.
+- Loads from files using `FROM 'my.csv'`, `FROM 'my.parquet'`, etc.
+- Filename expansion (globbing) (e.g., `FROM 'my-data/part-*.parquet'`).
+
+### Functions and Expressions
+
+- Dot operator for function chaining (e.g., `SELECT ('hello').upper()`).
+- String formatters: `format()` (with `fmt` syntax) and `printf()`.
+- List comprehensions.
+- List and string slicing.
+- `STRUCT.*` notation.
+- Simple `LIST` and `STRUCT` creation.
+
+### Join Types
+
+- `ASOF` joins.
+- `LATERAL` joins.
+- `POSITIONAL` joins.
+
+### Trailing Commas
+
+- Allowed when listing entities and constructing `LIST` items.
+
+**Example:**
+
+```sql
+SELECT
+    42 AS x,
+    ['a', 'b', 'c',] AS y,
+    'hello world' AS z,
+;
+```
+
+### "Top-N in Group" Queries
+
+- Efficiently get the top N rows in a group using:
+    - `max(arg, n)`
+    - `min(arg, n)`
+    - `arg_max(arg, val, n)`
+    - `arg_min(arg, val, n)`
+    - `max_by(arg, val, n)`
+    - `min_by(arg, val, n)`
+
+**Example:**
+
+```sql
+-- Get top 3 values in each group
+SELECT max(val, 3) FROM t1 GROUP BY grp;
+```
+
+## Keywords and Identifiers
+
+### Identifiers
+
+- **Unquoted identifiers:**
+    - Must not be a reserved keyword.
+    - Must not start with a number or special character.
+    - Cannot contain whitespaces.
+- **Quoted identifiers (using double quotes):**
+    - Can use any keyword, whitespace, or special character.
+    - Double quotes can be escaped by repeating them (e.g., `"IDENTIFIER ""X""`").
+
+### Deduplicating Identifiers
+
+- Automatically renames duplicate identifiers:
+    - First instance: `⟨name⟩`
+    - Subsequent instances: `⟨name⟩_⟨count⟩` (where `⟨count⟩` starts at 1).
+
+### Database Names
+
+- Follow identifier rules.
+- Avoid internal schema names `system` and `temp`.
+- Use aliases if necessary (e.g., `ATTACH 'temp.db' AS temp2;`).
+
+### Case Sensitivity
+
+- **Keywords and function names:** Case-insensitive.
+- **Identifiers:** Case-insensitive (even when quoted), but preserves the original case.
+- **Conflicts:** If the same identifier is spelled with different cases, one is selected randomly.
+- **Disabling case preservation:** `SET preserve_identifier_case = false;` (turns all identifiers to lowercase).
+
+## Order Preservation
+
+- DuckDB preserves row order for many operations (like data frame libraries).
+
+### Clauses Preserving Order
+
+- `COPY`
+- `FROM` (with a single table)
+- `LIMIT`
+- `OFFSET`
+- `SELECT`
+- `UNION ALL`
+- `WHERE`
+- Window functions with an empty `OVER` clause
+
+### Operations NOT Preserving Order
+
+- `FROM` (with multiple tables/subqueries)
+- `JOIN`
+- `UNION`
+- `USING SAMPLE`
+- `GROUP BY`
+- `ORDER BY`
+
+### Insertion Order
+
+- Preserved by default for:
+    - CSV reader (`read_csv`)
+    - JSON reader (`read_json`)
+    - Parquet reader (`read_parquet`)
+- Controlled by `preserve_insertion_order` setting (default: `true`).
+
+## PostgreSQL Compatibility
+
+### Floating-Point Arithmetic
+
+- DuckDB follows IEEE 754 for division by zero and infinity operations.
+- PostgreSQL returns an error for division by zero but aligns with IEEE 754 for infinity.
+
+### Division on Integers
+
+- PostgreSQL: Integer division.
+- DuckDB: Float division (use `//` for integer division).
+
+### `UNION` of Boolean and Integer
+
+- PostgreSQL: Fails.
+- DuckDB: Enforced cast (e.g., `true` becomes `1`).
+
+### Case Sensitivity for Quoted Identifiers
+
+- PostgreSQL: Quoted identifiers are case-sensitive.
+- DuckDB: All identifiers are case-insensitive, but case is preserved.
+
+### Double Equality Sign (`==`)
+
+- DuckDB: Supports both `=` and `==` for equality comparison.
+- PostgreSQL: Only supports `=`.
+
+### Vacuuming Tables
+
+- PostgreSQL: `VACUUM` garbage collects and analyzes tables.
+- DuckDB: `VACUUM` only rebuilds statistics.
+
+### Functions
+
+- **`to_date`**: Use `strptime` in DuckDB.
+- **`current_date`, `current_time`, `current_timestamp`**:
+    - DuckDB: Returns UTC date/time.
+    - PostgreSQL: Returns date/time in the configured local timezone.
+    - DuckDB also has `current_localtime()`, `current_localtimestamp()`.
+
+### Type Name Resolution in Schema
+
+- DuckDB resolves type names in the schema where a table is created.
+- PostgreSQL may return an error if the type is not found in the default search path.
+
+In python, use duckdb-engine to connect to DuckDB like this:
+
+```python
+import duckdb
+con = duckdb.connect(':memory:')
+con.sql('CREATE TABLE tbl AS SELECT 1 AS col')
+# for a pandas dataframe
+df = con.sql('SELECT * FROM tbl').df()
+# for a polars dataframe
+df = con.sql('SELECT * FROM tbl').pl()
+# for a list of dictionaries
+df = con.sql('SELECT * FROM tbl').to_df()
+
+you can also do things like this:
+def get_list_from_duckdb(query, column_name):
+  try:
+    con = duckdb.connect()  # In-memory database by default
+    result = con.execute(query).fetchall()
+    con.close()
+
+    if result:
+      return [row[result[0].index(column_name)] for row in result]
+    else:
+      return []  # Return an empty list if the query returns no rows
+  except Exception as e:
+    print(f"Error executing query: {e}")
+    return None
+```
 
 Core Guidelines:
 - Treat !! marked text as precise voice instructions

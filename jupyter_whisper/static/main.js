@@ -99,11 +99,16 @@ async function keyboardShortcutHandler(event) {
                 const data = await response.json();
                 if (DEBUG) console.log("Received response:", data);
                 
-                if (!data.content || !data.content[0] || !data.content[0].text) {
-                    throw new Error("Invalid response format from server");
+                let newText;
+                if (data.content && data.content[0] && data.content[0].text) {
+                    // Handle Anthropic-like response
+                    newText = data.content[0].text;
+                } else if (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) {
+                    // Handle OpenAI-like response
+                    newText = data.choices[0].message.content;
+                } else {
+                    throw new Error("Invalid or unexpected response format from server");
                 }
-
-                const newText = data.content[0].text;
 
                 // Replace the selected text with the response text
                 const pasteEvent = new ClipboardEvent('paste', {

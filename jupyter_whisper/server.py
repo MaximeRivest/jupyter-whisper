@@ -83,22 +83,6 @@ async def quick_edit(request: TextRequest):
             f"Received request with text length: {len(request.selectedText)}")
 
     config = get_config_manager()
-    api_key = config.get_api_key('ANTHROPIC_API_KEY')
-
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="ANTHROPIC_API_KEY not found. Please run setup_jupyter_whisper() to configure."
-        )
-
-    url = 'https://api.anthropic.com/v1/messages'
-    headers = {
-        'x-api-key': api_key,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
-    }
-
-    # Get active profile and its configurations
     active_profile_name = config.get_active_quick_edit_profile()
     if not active_profile_name:
         raise HTTPException(
@@ -114,14 +98,65 @@ async def quick_edit(request: TextRequest):
             detail=f"Profile '{active_profile_name}' not found"
         )
 
-    data = {
-        "model": active_profile['model'],
-        "system": active_profile['system_prompt'],
-        "messages": [
-            {"role": "user", "content": request.selectedText}
-        ],
-        "max_tokens": 8192
+    provider = active_profile.get('provider')
+    model = active_profile.get('model')
+    system_prompt = active_profile.get('system_prompt')
+
+    api_key_name_map = {
+        "anthropic": "ANTHROPIC_API_KEY",
+        "grok": "GROK_API_KEY",
+        "GEMINI": "GEMINI_API_KEY",
+        "gpt4o-latest": "OPENAI_API_KEY",
     }
+    api_key_name = api_key_name_map.get(provider)
+
+    if not provider or not api_key_name:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{provider}' is not supported for quick edit."
+        )
+
+    api_key = config.get_api_key(api_key_name)
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{api_key_name} not found. Please run setup_jupyter_whisper() to configure."
+        )
+
+    url, headers, data = None, None, None
+
+    if provider == 'anthropic':
+        url = 'https://api.anthropic.com/v1/messages'
+        headers = {
+            'x-api-key': api_key,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json'
+        }
+        data = {
+            "model": model,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": request.selectedText}],
+            "max_tokens": 8192
+        }
+    elif provider in ['grok', 'GEMINI', 'gpt4o-latest']:
+        base_urls = {
+            'grok': 'https://api.x.ai/v1/chat/completions',
+            'GEMINI': 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+            'gpt4o-latest': 'https://api.openai.com/v1/chat/completions'
+        }
+        url = base_urls[provider]
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": request.selectedText}
+            ],
+            "max_tokens": 8192
+        }
 
     try:
         response = requests.post(url, headers=headers, json=data)

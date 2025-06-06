@@ -110,7 +110,12 @@ def create_code_cell(code_content, code_lang, app, count, c):
     elif code_lang == "r":
         code_cell_content = f"%%R\n#%%assistant {len(c.h)-1}\n{code_content}"
     elif code_lang == "html":
-        code_cell_content = f"%%html\n{code_content}"
+        code_cell_content = f"%%html<!--%%assistant {len(c.h)-1}-->\n{code_content}"
+    elif code_lang == "sql":
+        code_cell_content = f"%%sql\n--%%assistant {len(c.h)-1}\n{code_content}"
+    elif code_lang == "css":
+        code_cell_content = f"%%css\n/*%%assistant {len(c.h)-1}*/\n{code_content}"
+
     else:
         code_cell_content = f"%%{code_lang}\n#%%assistant {len(c.h)-1}\n{code_content}"
 
